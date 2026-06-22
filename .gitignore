@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.venv/
+venv/
+.env
+
+.idea/
+.vscode/
+
+.model_runs/
+*.log
+
+# Large sample/output datasets exceed GitHub's normal 100 MB file limit.
+分选模型/edata/Test_Data/
+识别模型/edata/Test_Data/
+识别模型/outputs_template_match_recognition/
