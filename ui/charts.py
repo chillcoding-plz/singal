@@ -88,9 +88,10 @@ class InteractiveFigureDialog(QDialog):
 
 
 class ChartCard(QFrame):
-    def __init__(self, title, parent=None):
+    def __init__(self, title, parent=None, compact=False):
         super().__init__(parent)
         self.setProperty("class", "card")
+        self.compact = compact
         self.figure = Figure(figsize=(4, 3), dpi=100, facecolor="white")
         self.canvas = FigureCanvas(self.figure)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -141,8 +142,11 @@ class ChartCard(QFrame):
             spine.set_color("#aebdcc")
         self.ax.tick_params(colors="#334155", labelsize=8)
         if legend:
-            self.ax.legend(frameon=True, fontsize=8, loc="best")
-        self.figure.tight_layout(pad=1.0)
+            self.ax.legend(frameon=True, fontsize=7 if self.compact else 8, loc="upper left")
+        if self.compact:
+            self.figure.subplots_adjust(left=0.10, right=0.985, top=0.965, bottom=0.16)
+        else:
+            self.figure.tight_layout(pad=1.0)
         self.canvas.draw_idle()
 
 
@@ -503,44 +507,63 @@ def plot_quality(card: ChartCard, df: pd.DataFrame, options: Dict[str, bool], vi
     card.canvas.draw_idle()
 
 
-def plot_feature_projection(card: ChartCard, track_results: pd.DataFrame, options: Dict[str, bool], visibility=None):
+def plot_feature_projection(card: ChartCard, data: pd.DataFrame, options: Dict[str, bool], visibility=None):
     card.clear()
-    if track_results is None or track_results.empty:
+    if data is None or data.empty:
         card.show_empty()
         return
-    x = track_results["Mean_RF"]
-    y = track_results["Mean_PRI"]
-    labels = track_results.get("Predicted_Label", pd.Series(["未知"] * len(track_results)))
+    if {"RF", "PRI"}.issubset(data.columns):
+        work = _sample(_visible(data, visibility)).copy()
+        x_column, y_column = "RF", "PRI"
+    elif {"Mean_RF", "Mean_PRI"}.issubset(data.columns):
+        work = data.copy()
+        x_column, y_column = "Mean_RF", "Mean_PRI"
+    else:
+        card.show_empty()
+        return
+    labels = work.get("Predicted_Label", pd.Series(["未知"] * len(work), index=work.index)).fillna("未知")
     for idx, label in enumerate(sorted(labels.unique())):
-        group = track_results[labels == label]
+        group = work[labels == label]
         legend_label = "未知" if str(label).lower() == "unknown" else str(label)
-        card.ax.scatter(group["Mean_RF"], group["Mean_PRI"], s=60, alpha=0.8, color=TRACK_COLORS[idx % len(TRACK_COLORS)], label=legend_label)
-    card.ax.set_xlabel("Mean RF")
-    card.ax.set_ylabel("Mean PRI")
+        card.ax.scatter(group[x_column], group[y_column], s=10, alpha=0.72, color=TRACK_COLORS[idx % len(TRACK_COLORS)], linewidths=0, label=legend_label)
+    card.ax.set_xlabel("RF" if x_column == "RF" else "Mean RF")
+    card.ax.set_ylabel("PRI" if y_column == "PRI" else "Mean PRI")
     card.finish(options.get("显示网格", True), options.get("显示图例", True))
 
 
-def plot_probability(card: ChartCard, track_results: pd.DataFrame, options: Dict[str, bool], visibility=None):
+def plot_probability(card: ChartCard, data: pd.DataFrame, options: Dict[str, bool], visibility=None):
     card.clear()
-    if track_results is None or track_results.empty:
+    if data is None or data.empty or "Confidence" not in data.columns:
         card.show_empty()
         return
-    labels = [f"T{int(t)}" for t in track_results["Track_ID"]]
-    confidence = track_results["Confidence"].to_numpy(float)
-    card.ax.bar(labels, confidence, color="#1E88E5", label="置信度")
-    card.ax.bar(labels, 1 - confidence, bottom=confidence, color="#D7E3F0", label="不确定度")
+    if "TOA" in data.columns:
+        work = _sample(_visible(data, visibility)).copy()
+        x = pd.to_numeric(work["TOA"], errors="coerce")
+        confidence = pd.to_numeric(work["Confidence"], errors="coerce").fillna(0.0).clip(0, 1)
+        card.ax.scatter(x, confidence, s=10, color="#1E88E5", alpha=0.72, linewidths=0, label="置信度")
+        card.ax.set_xlabel("TOA")
+    else:
+        work = data.head(40).copy()
+        labels = [f"T{int(t)}" for t in work["Track_ID"]]
+        confidence = pd.to_numeric(work["Confidence"], errors="coerce").fillna(0.0).clip(0, 1).to_numpy(float)
+        card.ax.bar(labels, confidence, color="#1E88E5", label="置信度")
+        card.ax.bar(labels, 1 - confidence, bottom=confidence, color="#D7E3F0", label="不确定度")
     card.ax.set_ylim(0, 1)
-    card.ax.set_ylabel("概率")
+    card.ax.set_ylabel("置信度")
     card.finish(options.get("显示网格", True), options.get("显示图例", True))
 
 
-def plot_class_stats(card: ChartCard, track_results: pd.DataFrame, options: Dict[str, bool], visibility=None):
+def plot_class_stats(card: ChartCard, data: pd.DataFrame, options: Dict[str, bool], visibility=None):
     card.clear()
-    if track_results is None or track_results.empty:
+    if data is None or data.empty or "Predicted_Label" not in data.columns:
         card.show_empty()
         return
-    counts = track_results["Predicted_Label"].value_counts()
-    bars = card.ax.bar(counts.index.astype(str), counts.values, color=TRACK_COLORS[: len(counts)])
+    counts = data["Predicted_Label"].replace("", pd.NA).dropna().value_counts()
+    if counts.empty:
+        card.show_empty()
+        return
+    colors = [TRACK_COLORS[index % len(TRACK_COLORS)] for index in range(len(counts))]
+    bars = card.ax.bar(counts.index.astype(str), counts.values, color=colors)
     card.ax.bar_label(bars, fontsize=8, padding=2)
     card.ax.set_ylabel("轨迹数")
     card.finish(options.get("显示网格", True), False)

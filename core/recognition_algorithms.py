@@ -73,12 +73,13 @@ def run_recognition(df: pd.DataFrame, model: str, progress_callback=None, should
         if recognition_accuracy is not None:
             out.attrs["recognition_accuracy"] = recognition_accuracy
             results.attrs["recognition_accuracy"] = recognition_accuracy
+        output_model = str(out["Recognition_Method"].iloc[0]) if "Recognition_Method" in out.columns and len(out) else model
         mean_conf = float(results["Confidence"].mean()) if not results.empty else 0.0
         class_count = int(results["Predicted_Label"].nunique()) if not results.empty else 0
         return RecognitionOutput(
             data=out,
             track_results=results,
-            model=model,
+            model=output_model,
             elapsed=time.perf_counter() - start,
             mean_confidence=mean_conf,
             class_count=class_count,

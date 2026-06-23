@@ -109,6 +109,8 @@ class Worker(QObject):
 def with_display_track_ids(data: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     if data is None or "Track_ID" not in data.columns:
         return data
+    if "Display_Track_ID" in data.columns:
+        return data
     out = data.copy()
     tracks = pd.to_numeric(out["Track_ID"], errors="coerce").fillna(0).astype(int)
     mapping: Dict[int, int] = {}
@@ -134,6 +136,8 @@ class AnalysisPage(QWidget):
         show_tracks=False,
         table_card: Optional[TableCard] = None,
         show_stage_selector=False,
+        grid_columns: int = 2,
+        compact_charts: bool = False,
     ):
         super().__init__()
         self.data: Optional[pd.DataFrame] = None
@@ -141,6 +145,9 @@ class AnalysisPage(QWidget):
         self.track_visibility: Dict[int, bool] = {}
         self.chart_specs = chart_specs
         self.table_card = table_card
+        self.grid_columns = max(1, int(grid_columns))
+        self.compact_charts = bool(compact_charts)
+        self._table_dirty = table_card is not None
         self.stage_results = []
         self._current_track_ids = None
         self._refresh_index = 0
@@ -189,20 +196,21 @@ class AnalysisPage(QWidget):
         grid = QGridLayout(center)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(8)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+        column_count = 2 if table_card is not None else self.grid_columns
+        for column in range(column_count):
+            grid.setColumnStretch(column, 1)
 
         self.chart_cards = []
         for index, (title, plotter) in enumerate(chart_specs):
-            card = ChartCard(title)
+            card = ChartCard(title, compact=self.compact_charts)
             self.chart_cards.append((card, plotter))
             if table_card is not None and index >= 2:
                 grid.addWidget(card, 1, 1)
             else:
-                grid.addWidget(card, index // 2, index % 2)
+                grid.addWidget(card, index // column_count, index % column_count)
         if table_card is not None:
             grid.addWidget(table_card, 1, 0)
-        row_count = 2 if table_card is not None else max(1, (len(chart_specs) + 1) // 2)
+        row_count = 2 if table_card is not None else max(1, (len(chart_specs) + column_count - 1) // column_count)
         for row in range(row_count):
             grid.setRowStretch(row, 1)
         splitter.addWidget(center)
@@ -216,8 +224,11 @@ class AnalysisPage(QWidget):
         self.clear()
 
     def set_data(self, data: Optional[pd.DataFrame], track_results: Optional[pd.DataFrame] = None):
+        table_changed = track_results is not self.track_results
         self.data = with_display_track_ids(data)
         self.track_results = track_results
+        if self.table_card is not None and table_changed:
+            self._table_dirty = True
         if self.track_panel is not None and self.data is not None and "Display_Track_ID" in self.data.columns:
             track_ids = tuple(sorted(int(value) for value in self.data["Display_Track_ID"].dropna().unique() if int(value) > 0))
             if track_ids != self._current_track_ids:
@@ -232,6 +243,14 @@ class AnalysisPage(QWidget):
                 self.track_panel.set_tracks([])
                 self.track_panel.blockSignals(False)
         self.refresh()
+        self._update_data_summary()
+
+    def set_data_silent(self, data: Optional[pd.DataFrame], track_results: Optional[pd.DataFrame] = None):
+        table_changed = track_results is not self.track_results
+        self.data = with_display_track_ids(data)
+        self.track_results = track_results
+        if self.table_card is not None and table_changed:
+            self._table_dirty = True
         self._update_data_summary()
 
     def set_stage_results(self, stage_results):
@@ -306,15 +325,14 @@ class AnalysisPage(QWidget):
         if self.data is None:
             return
         if self._refresh_index >= len(self.chart_cards):
-            if self.table_card is not None:
+            if self.table_card is not None and self._table_dirty:
                 self.table_card.set_dataframe(self.track_results)
+                self._table_dirty = False
             return
         card, plotter = self.chart_cards[self._refresh_index]
         self._refresh_index += 1
-        if plotter in {plot_feature_projection, plot_probability, plot_class_stats}:
-            plotter(card, self.track_results, self._refresh_options, self.track_visibility)
-        else:
-            plotter(card, self.data, self._refresh_options, self.track_visibility)
+        plot_data = self.track_results if plotter is plot_class_stats and self.track_results is not None else self.data
+        plotter(card, plot_data, self._refresh_options, self.track_visibility)
         card.set_detail_renderer(
             lambda figure,
             plotter=plotter,
@@ -322,7 +340,12 @@ class AnalysisPage(QWidget):
             track_results=self.track_results,
             options=dict(self._refresh_options),
             visibility=dict(self.track_visibility): render_full_detail_figure(
-                figure, plotter, data, track_results, options, visibility
+                figure,
+                plotter,
+                track_results if plotter is plot_class_stats and track_results is not None else data,
+                track_results,
+                options,
+                visibility,
             )
         )
         self._refresh_timer.start(20)
@@ -332,6 +355,7 @@ class AnalysisPage(QWidget):
             card.show_empty()
         if self.table_card is not None:
             self.table_card.set_dataframe(None)
+            self._table_dirty = False
 
 
 class MainWindow(QMainWindow):
@@ -356,6 +380,8 @@ class MainWindow(QMainWindow):
         self.compare_enabled = False
         self.pending_partial_sorting_data: Optional[pd.DataFrame] = None
         self.partial_sorting_started = False
+        self.stream_recognition_enabled = False
+        self.last_recognition_table_update = 0.0
         self.partial_sorting_timer = QTimer(self)
         self.partial_sorting_timer.setInterval(400)
         self.partial_sorting_timer.setSingleShot(True)
@@ -371,6 +397,7 @@ class MainWindow(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
+        self.tabs.currentChanged.connect(self._refresh_current_tab)
         layout.addWidget(self.tabs, 1)
 
         self.home_ribbon = RibbonBar("开始运行", "方法选择", "导出图表")
@@ -403,12 +430,14 @@ class MainWindow(QMainWindow):
             ],
             show_tracks=True,
             show_stage_selector=True,
+            grid_columns=3,
+            compact_charts=True,
         )
         self.recognition_page = AnalysisPage(
             self.recognition_ribbon,
             [
                 ("特征二维投影散点图", plot_feature_projection),
-                ("分类概率堆叠条形图", plot_probability),
+                ("识别置信度散点图", plot_probability),
                 ("类别统计柱状图", plot_class_stats),
             ],
             show_tracks=True,
@@ -576,6 +605,11 @@ class MainWindow(QMainWindow):
             self.recognition_page.method_panel,
             self.export_method_panel,
         ]
+
+    def _refresh_current_tab(self, _index=None):
+        page = self.tabs.currentWidget()
+        if isinstance(page, AnalysisPage) and page.data is not None:
+            page.refresh()
 
     def _sync_pipeline_selection(self, pipeline_id: str):
         for panel in self._method_panels():
@@ -1047,6 +1081,7 @@ class MainWindow(QMainWindow):
             pass_progress=True,
             animate_progress=False,
             stream_updates=True,
+            stream_recognition=True,
         )
 
     def start_home_pipeline(self):
@@ -1069,7 +1104,7 @@ class MainWindow(QMainWindow):
         if self.data is None or self.sorting_output is None or "Track_ID" not in self.data.columns:
             return False
         method = str(self.sorting_output.method).lower()
-        return method == "cycle_period" or self.sorting_output.method == "导入分选结果"
+        return "cycle_period" in method or self.sorting_output.method == "导入分选结果"
 
     def start_recognition_from_current_sorting(self):
         model = self.recognition_page.method_panel.selected_recognition_method()
@@ -1153,8 +1188,19 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentWidget(self.recognition_page)
         return False
 
-    def _run_background(self, func, *args, done, stages=None, pass_progress=False, animate_progress=True, stream_updates=False):
+    def _run_background(
+        self,
+        func,
+        *args,
+        done,
+        stages=None,
+        pass_progress=False,
+        animate_progress=True,
+        stream_updates=False,
+        stream_recognition=False,
+    ):
         self._clear_partial_sorting_update()
+        self.stream_recognition_enabled = bool(stream_recognition)
         self._set_all_running(True)
         self.progress.setValue(5)
         self.step_label.setText("当前操作：任务启动")
@@ -1197,18 +1243,50 @@ class MainWindow(QMainWindow):
         self.pending_partial_sorting_data = None
         if data is None or data.empty:
             return
-        if not self.partial_sorting_started:
+        first_partial = not self.partial_sorting_started
+        if first_partial:
             self.sort_page.clear_stage_results()
-            self.tabs.setCurrentWidget(self.sort_page)
             self.partial_sorting_started = True
-        self.sort_page.set_data(data)
-        self.sort_page.method_panel.update_summary(self._summary_for_dataframe(data))
+        if "Predicted_Label" in data.columns:
+            if self.tabs.currentWidget() is self.sort_page:
+                self.sort_page.set_data(data)
+            else:
+                self.sort_page.set_data_silent(data)
+            self.sort_page.method_panel.update_summary(self._summary_for_dataframe(data))
+            now = time.perf_counter()
+            existing_results = self.recognition_page.track_results
+            should_update_table = first_partial or existing_results is None or now - self.last_recognition_table_update >= 2.0
+            if should_update_table:
+                track_results = self._recognition_results_from_dataframe(data)
+                self.last_recognition_table_update = now
+            else:
+                track_results = existing_results
+            self.recognition_page.set_data(data, track_results)
+            recognition_summary = self._summary_for_dataframe(data)
+            if track_results is not None and not track_results.empty:
+                recognition_summary.update(
+                    {
+                        "识别轨迹数": len(track_results),
+                        "平均置信度": f"{float(track_results['Confidence'].mean()) * 100:.1f}%",
+                        "类别数": int(track_results["Predicted_Label"].nunique()),
+                    }
+                )
+            self.recognition_page.method_panel.update_summary(recognition_summary)
+            if self.stream_recognition_enabled and first_partial:
+                self.tabs.setCurrentWidget(self.recognition_page)
+        else:
+            self.sort_page.set_data(data)
+            self.sort_page.method_panel.update_summary(self._summary_for_dataframe(data))
+            if first_partial:
+                self.tabs.setCurrentWidget(self.sort_page)
 
     def _clear_partial_sorting_update(self):
         if hasattr(self, "partial_sorting_timer"):
             self.partial_sorting_timer.stop()
         self.pending_partial_sorting_data = None
         self.partial_sorting_started = False
+        self.stream_recognition_enabled = False
+        self.last_recognition_table_update = 0.0
 
     def _advance_task_progress(self):
         value = self.progress.value()
@@ -1350,6 +1428,36 @@ class MainWindow(QMainWindow):
             "平均 PRI": f"{df['PRI'].mean():.3f}" if "PRI" in df else "-",
             "平均脉宽": f"{df['PW'].mean():.3f}" if "PW" in df else "-",
         }
+
+    def _recognition_results_from_dataframe(self, df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+        if df is None or "Predicted_Label" not in df.columns or "Track_ID" not in df.columns:
+            return None
+        tracks = pd.to_numeric(df["Track_ID"], errors="coerce").fillna(0).astype(int)
+        valid = df[tracks > 0].copy()
+        columns = ["Track_ID", "Pulse_Count", "Mean_RF", "Mean_PW", "Mean_PRI", "Predicted_Label", "Confidence"]
+        if valid.empty:
+            return pd.DataFrame(columns=columns)
+        rows = []
+        for track_id, group in valid.groupby("Track_ID", sort=True):
+            labels = group["Predicted_Label"].replace("", pd.NA).dropna()
+            predicted_label = str(labels.astype(str).mode().iloc[0]) if not labels.empty else "Unknown"
+            confidence = (
+                float(pd.to_numeric(group["Confidence"], errors="coerce").fillna(0.0).mean())
+                if "Confidence" in group
+                else 0.0
+            )
+            rows.append(
+                {
+                    "Track_ID": int(track_id),
+                    "Pulse_Count": int(len(group)),
+                    "Mean_RF": float(group["RF"].mean()) if "RF" in group else 0.0,
+                    "Mean_PW": float(group["PW"].mean()) if "PW" in group else 0.0,
+                    "Mean_PRI": float(group["PRI"].mean()) if "PRI" in group else 0.0,
+                    "Predicted_Label": predicted_label,
+                    "Confidence": confidence,
+                }
+            )
+        return pd.DataFrame(rows, columns=columns)
 
     def show_method_selector(self):
         page = self.tabs.currentWidget()

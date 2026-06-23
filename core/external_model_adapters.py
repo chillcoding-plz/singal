@@ -8,6 +8,7 @@ import queue
 import threading
 import importlib.util
 import json
+from types import SimpleNamespace
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
@@ -372,6 +373,24 @@ def run_hdbscan_sorting(
     )
     cycle_mcfg = cycle_module.build_candidate_cfg(cycle_cfg)
     cycle_output_dir.mkdir(parents=True, exist_ok=True)
+    zeng_rec_module = None
+    zeng_args = None
+    zeng_templates = None
+    zeng_metadata = None
+    zeng_threshold_scale = 0.5
+    zeng_label_scales: Dict[int, float] = {}
+    zeng_min_margin = 0.0
+    zeng_class_floor_scale = 0.4
+    if stream_callback is not None and zeng_template_library_exists():
+        zeng_rec_module = _load_zeng_recognition_module()
+        zeng_args = _zeng_200ms_args()
+        zeng_templates, zeng_metadata = zeng_rec_module.load_template_library(ZENG_TEMPLATE_LIBRARY)
+        (
+            zeng_threshold_scale,
+            zeng_label_scales,
+            zeng_min_margin,
+            zeng_class_floor_scale,
+        ) = zeng_rec_module.resolve_matching_parameters(zeng_args, ZENG_TEMPLATE_LIBRARY)
     streaming_out = df.copy()
     streaming_out["Track_ID"] = 0
     streaming_out["HDBSCAN_Input_Track_ID"] = 0
@@ -388,6 +407,11 @@ def run_hdbscan_sorting(
     streaming_out["HDBSCAN_Beat_Output_Dir"] = str(output_dir)
     streaming_out["CyclePeriod_Run_Dir"] = str(run_dir)
     streaming_out["CyclePeriod_Beat_Output_Dir"] = str(cycle_output_dir)
+    if zeng_rec_module is not None:
+        streaming_out["Predicted_Label"] = ""
+        streaming_out["Confidence"] = 0.0
+        streaming_out["Recognition_Method"] = "zeng-200ms-live"
+        streaming_out["Recognition_Run_Dir"] = str(run_dir)
     stream_state = {"next_row": 0}
 
     def on_stream_line(line: str) -> None:
@@ -418,6 +442,7 @@ def run_hdbscan_sorting(
         raw_cycle_sigidx = pd.to_numeric(cycle_beat[cycle_cfg.annotated_label_col], errors="coerce").to_numpy()[: end - start]
         cycle_raw_pred = _raw_cycle_pred_ids(raw_cycle_sigidx)[: end - start]
         cycle_track_ids = _positive_cycle_track_ids(cycle_raw_pred, hdbscan_sigidx)
+        completed_beats = min(int(event.get("beat", 0)) + 1, total_beats)
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("HDBSCAN_Input_Track_ID")] = hdbscan_sigidx
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("HDBSCAN_Track_ID")] = hdbscan_sigidx
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("HDBSCAN_Assigned")] = hdbscan_sigidx > 0
@@ -426,15 +451,37 @@ def run_hdbscan_sorting(
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("CyclePeriod_Assigned")] = cycle_track_ids > 0
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("Track_ID")] = cycle_track_ids
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("Assigned")] = cycle_track_ids > 0
+        recognition_suffix = ""
+        if zeng_rec_module is not None:
+            window_pdw = _pdw_from_external_beat(beat_result).iloc[: end - start].reset_index(drop=True)
+            labels, _, confidences = _recognize_zeng_200ms_window(
+                zeng_rec_module,
+                window_pdw,
+                cycle_track_ids,
+                zeng_templates,
+                zeng_metadata,
+                zeng_args,
+                zeng_threshold_scale,
+                zeng_label_scales,
+                zeng_min_margin,
+                zeng_class_floor_scale,
+            )
+            label_text = ["Unknown" if int(value) == int(zeng_rec_module.UNKNOWN_LABEL) else f"Class_{int(value)}" for value in labels]
+            confidence = np.array(
+                [confidences.get(int(track_id), 0.5 if int(track_id) > 0 else 0.0) for track_id in cycle_track_ids],
+                dtype=float,
+            )
+            streaming_out.iloc[start:end, streaming_out.columns.get_loc("Predicted_Label")] = label_text
+            streaming_out.iloc[start:end, streaming_out.columns.get_loc("Confidence")] = confidence
+            recognition_suffix = "+zeng识别"
         stream_state["next_row"] = end
-        completed_beats = min(int(event.get("beat", 0)) + 1, total_beats)
         pct = int(100 * completed_beats / total_beats)
         _emit(
             progress_callback,
             pct,
             (
                 f"200ms节拍流水线：beat {completed_beats}/{total_beats} 完成 "
-                f"(HDBSCAN+cycle_period)，进度 {pct}%"
+                f"(HDBSCAN+cycle_period{recognition_suffix})，进度 {pct}%"
             ),
         )
         if stream_callback is not None:
@@ -518,6 +565,9 @@ def run_hdbscan_sorting(
     out["HDBSCAN_Beat_Output_Dir"] = str(output_dir)
     out["CyclePeriod_Run_Dir"] = str(run_dir)
     out["CyclePeriod_Beat_Output_Dir"] = str(cycle_output_dir)
+    for column in ["Predicted_Label", "Confidence", "Recognition_Method", "Recognition_Run_Dir"]:
+        if column in streaming_out.columns:
+            out[column] = streaming_out[column].to_numpy()
     return _add_display_track_ids(out)
 
 
@@ -545,6 +595,119 @@ def _load_cycle_period_beat_module():
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _load_zeng_recognition_module():
+    script = RECOGNITION_MODEL_DIR / "template_match_recognition.py"
+    if not script.exists():
+        raise FileNotFoundError(f"zeng 模板匹配脚本不存在：{script}")
+    module_name = "zeng_template_match_recognition_model"
+    spec = importlib.util.spec_from_file_location(module_name, script)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载 zeng 模板匹配脚本：{script}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _zeng_200ms_args() -> SimpleNamespace:
+    return SimpleNamespace(
+        min_batch_pulses=20,
+        pri_gap_multiplier=5.0,
+        pri_gap_quantile=0.90,
+        threshold_scale=0.5,
+        label_threshold_scales="1:0.5,2:0.5,3:0.5,4:0.5",
+        class_threshold_floor_scale=0.4,
+        min_margin=0.0,
+        matching_mode="nearest",
+        class_ratio_margin=0.0,
+        enable_label2_rescue=False,
+        label2_rescue_ratio=1.0,
+        label2_feature_padding=0.5,
+        secondary_reject_ratio_caps="",
+        enable_topk_label_rescue=False,
+        topk_rescue_label=2,
+        topk_size=8,
+        topk_min_votes=2,
+        topk_max_ratio=2.0,
+        topk_feature_padding=1.0,
+        enable_class_ratio_label_rescue=False,
+        class_ratio_rescue_label=2,
+        class_ratio_rescue_max_ratio=2.0,
+        class_ratio_rescue_max_delta=0.5,
+        class_ratio_rescue_feature_padding=1.0,
+        tuning_file="",
+    )
+
+
+def _pdw_from_external_beat(beat: pd.DataFrame) -> pd.DataFrame:
+    pdw = beat.iloc[:, :8].copy()
+    pdw.columns = ["TOA(s)", "Param1", "Param2", "Param3", "Param4", "Param5", "Param6", "Param7"]
+    return pdw
+
+
+def _recognize_zeng_200ms_window(
+    rec_module,
+    pdw_window: pd.DataFrame,
+    sigidx_window: np.ndarray,
+    templates: pd.DataFrame,
+    metadata: Dict[str, object],
+    args: SimpleNamespace,
+    threshold_scale: float,
+    label_scales: Dict[int, float],
+    min_margin: float,
+    class_floor_scale: float,
+) -> tuple[np.ndarray, pd.DataFrame, Dict[int, float]]:
+    labels = np.full(len(pdw_window), int(rec_module.UNKNOWN_LABEL), dtype=np.int64)
+    batches = rec_module.build_recognition_batches(
+        pdw_window,
+        sigidx_window,
+        min_batch_pulses=int(args.min_batch_pulses),
+        gap_multiplier=float(args.pri_gap_multiplier),
+        gap_quantile=float(args.pri_gap_quantile),
+    )
+    if len(batches) == 0:
+        return labels, pd.DataFrame(), {}
+
+    pred_batches = rec_module.match_batches(
+        batches,
+        templates,
+        metadata,
+        threshold_scale=threshold_scale,
+        label_threshold_scales=label_scales,
+        class_threshold_floor_scale=class_floor_scale,
+        min_margin=min_margin,
+        matching_mode=str(args.matching_mode),
+        class_ratio_margin=float(args.class_ratio_margin),
+        enable_label2_rescue=bool(args.enable_label2_rescue),
+        label2_rescue_ratio=float(args.label2_rescue_ratio),
+        label2_feature_padding=float(args.label2_feature_padding),
+        secondary_reject_ratio_caps=rec_module.parse_label_float_map(args.secondary_reject_ratio_caps),
+        enable_topk_label_rescue=bool(args.enable_topk_label_rescue),
+        topk_rescue_label=int(args.topk_rescue_label),
+        topk_size=int(args.topk_size),
+        topk_min_votes=int(args.topk_min_votes),
+        topk_max_ratio=float(args.topk_max_ratio),
+        topk_feature_padding=float(args.topk_feature_padding),
+        enable_class_ratio_label_rescue=bool(args.enable_class_ratio_label_rescue),
+        class_ratio_rescue_label=int(args.class_ratio_rescue_label),
+        class_ratio_rescue_max_ratio=float(args.class_ratio_rescue_max_ratio),
+        class_ratio_rescue_max_delta=float(args.class_ratio_rescue_max_delta),
+        class_ratio_rescue_feature_padding=float(args.class_ratio_rescue_feature_padding),
+    )
+    labels = rec_module.labels_from_batches(sigidx_window, pred_batches)
+    confidences = {}
+    for _, row in pred_batches.iterrows():
+        track_id = int(row.get("pred_sigidx", 0))
+        dist = float(row.get("template_distance", np.nan))
+        threshold = float(row.get("template_distance_threshold", np.nan))
+        if np.isfinite(dist) and np.isfinite(threshold) and threshold > 0:
+            confidence = float(np.clip(1.0 - dist / threshold, 0.05, 0.99))
+        else:
+            confidence = 0.8 if int(row.get("batch_pred_label", 99)) != 99 else 0.5
+        confidences[track_id] = confidence
+    return labels, pred_batches, confidences
 
 
 def _constant_path_from_column(df: pd.DataFrame, column: str) -> Optional[Path]:
@@ -807,7 +970,7 @@ def _confidence_by_track(batch_file: Path) -> Dict[int, float]:
     if not batch_file.exists():
         return {}
     batches = pd.read_csv(batch_file)
-    confidence: Dict[int, float] = {}
+    confidence_values: Dict[int, list[float]] = {}
     for _, row in batches.iterrows():
         track_id = int(row.get("pred_sigidx", 0))
         dist = float(row.get("template_distance", np.nan))
@@ -816,8 +979,8 @@ def _confidence_by_track(batch_file: Path) -> Dict[int, float]:
             value = float(np.clip(1.0 - dist / threshold, 0.05, 0.99))
         else:
             value = 0.8 if int(row.get("batch_pred_label", 99)) != 99 else 0.5
-        confidence[track_id] = value
-    return confidence
+        confidence_values.setdefault(track_id, []).append(value)
+    return {track_id: float(np.mean(values)) for track_id, values in confidence_values.items()}
 
 
 def run_zeng_recognition(
@@ -839,16 +1002,18 @@ def run_zeng_recognition(
     if not template_library.exists():
         raise FileNotFoundError(f"zeng 识别需要训练生成模板库，当前缺少：{template_library}")
 
-    run_dir = _run_dir("zeng_recognition")
+    run_dir = _run_dir("zeng_200ms_recognition")
     print(f"[zeng] run_dir={run_dir}", flush=True)
-    _emit(progress_callback, 5, f"zeng运行目录：{run_dir}")
+    _emit(progress_callback, 5, f"zeng 200ms运行目录：{run_dir}")
     pdw_file = run_dir / "input_pdw.txt"
     sort_file = run_dir / "input_sort.txt"
     output_dir = run_dir / "output"
     write_external_pdw(df, pdw_file)
     write_external_sort(df, sort_file)
 
-    script = RECOGNITION_MODEL_DIR / "template_match_recognition.py"
+    script = RECOGNITION_MODEL_DIR / "template_match_recognition_200ms.py"
+    if not script.exists():
+        raise FileNotFoundError(f"zeng 200ms识别脚本不存在：{script}")
     command = [
         sys.executable,
         "-u",
@@ -863,18 +1028,20 @@ def run_zeng_recognition(
         str(output_dir),
         "--template_library",
         str(template_library),
+        "--window_seconds",
+        "0.2",
     ]
     _run_python_script(command, RECOGNITION_MODEL_DIR, run_dir / "run.log", progress_callback, should_cancel)
 
-    final_file = output_dir / "sample1_template_match_final.txt"
-    batch_file = output_dir / "sample1_template_match_batches.csv"
+    final_file = output_dir / "sample1_200ms_template_match_all_pdw_with_label.txt"
+    batch_file = output_dir / "sample1_200ms_template_match_batches.csv"
     if not final_file.exists():
-        raise RuntimeError(f"zeng 外部算法已结束，但没有生成识别结果：{final_file}\n日志文件：{run_dir / 'run.log'}")
+        raise RuntimeError(f"zeng 200ms外部算法已结束，但没有生成识别结果：{final_file}\n日志文件：{run_dir / 'run.log'}")
     final = pd.read_csv(final_file, sep=r"\s+", engine="python")
     if "LABEL" not in final.columns:
-        raise ValueError(f"zeng 识别输出缺少 LABEL 字段：{final_file}")
+        raise ValueError(f"zeng 200ms识别输出缺少 LABEL 字段：{final_file}")
     if len(final) != len(df):
-        raise ValueError(f"zeng 识别输出行数不匹配：{len(final)} != {len(df)}")
+        raise ValueError(f"zeng 200ms识别输出行数不匹配：{len(final)} != {len(df)}")
 
     out = df.copy()
     labels = pd.to_numeric(final["LABEL"], errors="coerce").fillna(99).astype(int)
@@ -882,6 +1049,9 @@ def run_zeng_recognition(
     confidences = _confidence_by_track(batch_file)
     out["Predicted_Label"] = labels.map(lambda value: "Unknown" if int(value) == 99 else f"Class_{int(value)}")
     out["Confidence"] = track_ids.map(lambda value: confidences.get(int(value), 0.5 if int(value) > 0 else 0.0))
+    out["Recognition_Method"] = "zeng-200ms"
+    out["Recognition_Run_Dir"] = str(run_dir)
+    out["Recognition_Output_Dir"] = str(output_dir)
 
     rows = []
     valid = out[track_ids > 0]
@@ -897,6 +1067,7 @@ def run_zeng_recognition(
                 "Mean_PRI": float(group["PRI"].mean()) if "PRI" in group else 0.0,
                 "Predicted_Label": predicted_label,
                 "Confidence": float(group["Confidence"].mean()),
+                "Recognition_Method": "zeng-200ms",
             }
         )
     return out, pd.DataFrame(rows)
