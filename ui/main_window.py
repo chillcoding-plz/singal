@@ -415,6 +415,7 @@ class MainWindow(QMainWindow):
             table_card=TableCard("识别结果表格"),
         )
         self.sort_ribbon.template_btn.setText("导入HDBSCAN结果")
+        self.sort_ribbon.template_btn.set_icon_kind("import")
         self.sort_ribbon.method_btn.setVisible(False)
         self.sort_ribbon.compare_btn.setVisible(False)
         self.sort_ribbon.import_btn.setVisible(False)
@@ -424,6 +425,7 @@ class MainWindow(QMainWindow):
         self.recognition_ribbon.compare_btn.setVisible(False)
         self.recognition_ribbon.sorting_result_btn.setVisible(False)
         self.recognition_ribbon.template_btn.setText("生成模板库")
+        self.recognition_ribbon.template_btn.set_icon_kind("template")
         self.export_ribbon.import_btn.setVisible(False)
         self.export_ribbon.method_btn.setVisible(False)
         self.export_ribbon.compare_btn.setVisible(False)
@@ -587,10 +589,13 @@ class MainWindow(QMainWindow):
     def _update_home_import_button(self):
         if self.data is None:
             self.home_ribbon.import_btn.setText("导入数据")
+            self.home_ribbon.import_btn.set_icon_kind("import")
         elif self.truth_file == "未导入":
             self.home_ribbon.import_btn.setText("导入Sorted")
+            self.home_ribbon.import_btn.set_icon_kind("truth")
         else:
             self.home_ribbon.import_btn.setText("重新导入数据")
+            self.home_ribbon.import_btn.set_icon_kind("import")
 
     def import_home_data(self):
         if self.data is None:

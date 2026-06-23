@@ -1,15 +1,15 @@
 import colorsys
 from typing import Dict, Iterable
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QPainter
+from PyQt5.QtCore import QPoint, QSize, Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygon
 from PyQt5.QtWidgets import (
     QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QPushButton,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -52,13 +52,103 @@ class ColorDot(QWidget):
         painter.drawEllipse(2, 2, 10, 10)
 
 
-class RibbonButton(QPushButton):
-    def __init__(self, text: str, primary: bool = False, parent=None):
-        super().__init__(text, parent)
+def _ribbon_icon(kind: str) -> QIcon:
+    pixmap = QPixmap(34, 34)
+    pixmap.fill(Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    blue = QColor("#0052b5")
+    green = QColor("#18a957")
+    gray = QColor("#5f6b76")
+    dark = QColor("#111827")
+
+    if kind == "import":
+        painter.setPen(QPen(dark, 2.0))
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawPath(_folder_path())
+    elif kind == "truth":
+        painter.setPen(QPen(blue, 2.0))
+        painter.setBrush(QColor("#f7fbff"))
+        painter.drawRoundedRect(8, 6, 18, 22, 2, 2)
+        painter.drawLine(12, 14, 22, 14)
+        painter.drawLine(12, 19, 22, 19)
+        painter.drawLine(12, 24, 19, 24)
+    elif kind == "run":
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(green)
+        painter.drawPolygon(QPolygon([QPoint(10, 6), QPoint(10, 28), QPoint(27, 17)]))
+    elif kind == "stop":
+        painter.setPen(QPen(gray, 1.5))
+        painter.setBrush(QColor("#68717a"))
+        painter.drawRect(10, 10, 14, 14)
+    elif kind == "method":
+        painter.setPen(QPen(blue, 2.2))
+        for x, y in [(10, 13), (17, 21), (24, 11)]:
+            painter.drawLine(x, 6, x, 28)
+            painter.setBrush(QColor("#ffffff"))
+            painter.drawEllipse(QPoint(x, y), 2, 2)
+    elif kind == "compare":
+        painter.setPen(QPen(blue, 2.0))
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawRoundedRect(7, 9, 10, 16, 2, 2)
+        painter.drawRoundedRect(17, 9, 10, 16, 2, 2)
+        painter.drawLine(13, 17, 21, 17)
+    elif kind == "template":
+        painter.setPen(QPen(blue, 2.0))
+        painter.setBrush(QColor("#f7fbff"))
+        painter.drawRoundedRect(7, 7, 20, 20, 2, 2)
+        painter.drawLine(12, 14, 22, 14)
+        painter.drawLine(12, 20, 22, 20)
+        painter.setBrush(green)
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(QPoint(24, 24), 5, 5)
+    elif kind == "export":
+        painter.setPen(QPen(blue, 2.0))
+        painter.setBrush(QColor("#ffffff"))
+        painter.drawRect(9, 6, 16, 22)
+        painter.drawLine(20, 6, 25, 11)
+        painter.drawLine(20, 6, 20, 11)
+        painter.drawLine(20, 11, 25, 11)
+        painter.drawLine(17, 14, 17, 23)
+        painter.drawLine(13, 19, 17, 23)
+        painter.drawLine(21, 19, 17, 23)
+    else:
+        painter.setPen(QPen(blue, 2.0))
+        painter.drawEllipse(7, 7, 20, 20)
+
+    painter.end()
+    return QIcon(pixmap)
+
+
+def _folder_path():
+    path = QPainterPath()
+    path.moveTo(5, 25)
+    path.lineTo(8, 11)
+    path.lineTo(16, 11)
+    path.lineTo(19, 15)
+    path.lineTo(29, 15)
+    path.lineTo(26, 27)
+    path.lineTo(5, 27)
+    path.closeSubpath()
+    return path
+
+
+class RibbonButton(QToolButton):
+    def __init__(self, text: str, icon_kind: str = "default", primary: bool = False, parent=None):
+        super().__init__(parent)
+        self.setText(text)
+        self.set_icon_kind(icon_kind)
+        self.setIconSize(QSize(34, 34))
+        self.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         self.setProperty("class", "ribbonButton")
         self.setProperty("primary", primary)
         self.setCursor(Qt.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+    def set_icon_kind(self, icon_kind: str):
+        self.setIcon(_ribbon_icon(icon_kind))
 
 
 class RibbonBar(QFrame):
@@ -79,18 +169,18 @@ class RibbonBar(QFrame):
         layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(10)
 
-        self.import_btn = RibbonButton("导入数据", primary=True)
-        self.truth_btn = RibbonButton("导入Sorted")
+        self.import_btn = RibbonButton("导入数据", "import", primary=True)
+        self.truth_btn = RibbonButton("导入Sorted", "truth")
         self.truth_btn.setVisible(False)
-        self.run_btn = RibbonButton(run_text, primary=True)
-        self.stop_btn = RibbonButton("停止")
-        self.method_btn = RibbonButton(method_text)
-        self.compare_btn = RibbonButton("对比显示")
-        self.sorting_result_btn = RibbonButton("导入分选结果")
+        self.run_btn = RibbonButton(run_text, "run", primary=True)
+        self.stop_btn = RibbonButton("停止", "stop")
+        self.method_btn = RibbonButton(method_text, "method")
+        self.compare_btn = RibbonButton("对比显示", "compare")
+        self.sorting_result_btn = RibbonButton("导入分选结果", "import")
         self.sorting_result_btn.setVisible(False)
-        self.template_btn = RibbonButton("生成模板库")
+        self.template_btn = RibbonButton("生成模板库", "template")
         self.template_btn.setVisible(False)
-        self.export_btn = RibbonButton(export_text)
+        self.export_btn = RibbonButton(export_text, "export")
 
         for button in [
             self.import_btn,

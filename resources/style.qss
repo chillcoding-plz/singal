@@ -123,6 +123,36 @@ QPushButton[class="ribbonButton"] {
     font-size: 12px;
 }
 
+QToolButton[class="ribbonButton"] {
+    background: #ffffff;
+    color: #1f2937;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    min-width: 92px;
+    min-height: 70px;
+    padding: 7px 10px 6px 10px;
+    font-size: 12px;
+}
+
+QToolButton[class="ribbonButton"]:hover {
+    border-color: #1e88e5;
+    background: #f0f8ff;
+}
+
+QToolButton[class="ribbonButton"]:pressed {
+    background: #ddecff;
+}
+
+QToolButton[class="ribbonButton"]:disabled {
+    color: #94a3b8;
+    background: #f1f5f9;
+}
+
+QToolButton[class="ribbonButton"][primary="true"] {
+    color: #0052b5;
+    font-weight: 700;
+}
+
 QComboBox {
     background: #ffffff;
     color: #1f2937;
