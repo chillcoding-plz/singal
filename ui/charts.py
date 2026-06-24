@@ -428,6 +428,13 @@ def _truth_column(df: pd.DataFrame) -> Optional[str]:
 
 
 def _cycle_period_prediction_column(df: pd.DataFrame) -> Optional[str]:
+    if "Sorting_Method" in df.columns:
+        methods = df["Sorting_Method"].dropna().astype(str).str.lower()
+        if methods.str.contains("mht").any():
+            if "MHT_MHTId" in df.columns:
+                return "MHT_MHTId"
+            if "MHT_Track_ID" in df.columns:
+                return "MHT_Track_ID"
     if "CyclePeriod_OurPredID" not in df.columns:
         return None
     if "Sorting_Method" not in df.columns:
@@ -444,7 +451,7 @@ def _majority_match_accuracy(df: pd.DataFrame) -> Optional[float]:
     data = df[[prediction_column, truth_column]].copy()
     data[prediction_column] = pd.to_numeric(data[prediction_column], errors="coerce").fillna(0).astype(int)
     data = data.dropna(subset=[truth_column])
-    if prediction_column == "CyclePeriod_OurPredID" and "Track_ID" in df.columns:
+    if prediction_column in {"CyclePeriod_OurPredID", "MHT_MHTId", "MHT_Track_ID"} and "Track_ID" in df.columns:
         assigned = pd.to_numeric(df.loc[data.index, "Track_ID"], errors="coerce").fillna(0).astype(int) > 0
         data = data[assigned]
     else:

@@ -1104,7 +1104,7 @@ class MainWindow(QMainWindow):
         if self.data is None or self.sorting_output is None or "Track_ID" not in self.data.columns:
             return False
         method = str(self.sorting_output.method).lower()
-        return "cycle_period" in method or self.sorting_output.method == "导入分选结果"
+        return "cycle_period" in method or "mht" in method or self.sorting_output.method == "导入分选结果"
 
     def start_recognition_from_current_sorting(self):
         model = self.recognition_page.method_panel.selected_recognition_method()
@@ -1534,7 +1534,7 @@ class MainWindow(QMainWindow):
         return directory
 
     def _sorting_run_directory(self, data: pd.DataFrame) -> Optional[str]:
-        for column in ("CyclePeriod_Run_Dir", "HDBSCAN_Run_Dir"):
+        for column in ("MHT_Run_Dir", "CyclePeriod_Run_Dir", "HDBSCAN_Run_Dir"):
             if column not in data.columns:
                 continue
             values = [str(value) for value in data[column].dropna().unique() if str(value).strip()]

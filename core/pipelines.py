@@ -55,15 +55,16 @@ class SortingPipelineResult:
 SORTING_STAGES: Dict[str, SortingStageDefinition] = {
     "hdbscan": SortingStageDefinition("hdbscan", "HDBSCAN", "HDBSCAN", "HDBSCAN"),
     "hdbscan_cycle_period": SortingStageDefinition("hdbscan_cycle_period", "HDBSCAN+cycle_period", "HDBSCAN", "CyclePeriod"),
+    "hdbscan_cycle_period_mht": SortingStageDefinition("hdbscan_cycle_period_mht", "HDBSCAN+cycle_period+MHT", "HDBSCAN", "MHT"),
     "cycle_period": SortingStageDefinition("cycle_period", "cycle_period", "cycle_period", "CyclePeriod"),
     "mht": SortingStageDefinition("mht", "MHT", "MHT", "MHT"),
 }
 
 SORTING_PIPELINE_ID = "sorting_pipeline"
-SORTING_PIPELINE_NAME = "HDBSCAN → cycle_period"
-IMPORTED_HDBSCAN_PIPELINE_NAME = "HDBSCAN（导入）→ cycle_period"
+SORTING_PIPELINE_NAME = "HDBSCAN → cycle_period → MHT"
+IMPORTED_HDBSCAN_PIPELINE_NAME = "HDBSCAN（导入）→ cycle_period → MHT"
 FULL_PIPELINE_ID = "full"
-FULL_PIPELINE_NAME = "HDBSCAN → cycle_period → zeng"
+FULL_PIPELINE_NAME = "HDBSCAN → cycle_period → MHT → zeng"
 RECOGNITION_MODEL = "zeng"
 
 PIPELINE_LABELS: Dict[str, str] = {SORTING_PIPELINE_ID: SORTING_PIPELINE_NAME}
@@ -84,7 +85,7 @@ def pipeline_label(pipeline_id: str) -> str:
 
 def pipeline_definition(pipeline_id: str) -> SortingStageDefinition:
     if pipeline_id == SORTING_PIPELINE_ID:
-        return SORTING_STAGES["hdbscan_cycle_period"]
+        return SORTING_STAGES["hdbscan_cycle_period_mht"]
     return SORTING_STAGES.get(pipeline_id, SORTING_STAGES["cycle_period"])
 
 
@@ -136,7 +137,23 @@ def run_cycle_period_pipeline_from_hdbscan(
         99,
     )
     cycle_stage.sorting.data = _add_stage_columns(cycle_stage.sorting.data, SORTING_STAGES["cycle_period"])
-    stages = [hdbscan_stage, cycle_stage]
+    cycle_view = cycle_stage.sorting.data.copy()
+    if "CyclePeriod_Track_ID" in cycle_view.columns:
+        cycle_tracks = pd.to_numeric(cycle_view["CyclePeriod_Track_ID"], errors="coerce").fillna(0).astype(int)
+        cycle_view["Track_ID"] = cycle_tracks
+        cycle_view["Assigned"] = cycle_view.get("CyclePeriod_Assigned", cycle_tracks > 0)
+        cycle_view["Sorting_Method"] = "cycle_period-200ms"
+    cycle_view = cycle_view.drop(
+        columns=[column for column in cycle_view.columns if column.startswith("MHT_") or column == "Display_Track_ID"],
+        errors="ignore",
+    )
+    cycle_stage_view = PipelineStageResult(
+        definition=SORTING_STAGES["hdbscan_cycle_period"],
+        sorting=_sorting_output_from_data(_add_stage_columns(cycle_view, SORTING_STAGES["hdbscan_cycle_period"]), "cycle_period-200ms", cycle_stage.elapsed),
+        elapsed=cycle_stage.elapsed,
+    )
+    mht_stage = PipelineStageResult(SORTING_STAGES["mht"], cycle_stage.sorting, cycle_stage.elapsed)
+    stages = [hdbscan_stage, cycle_stage_view, mht_stage]
     final_sorting = cycle_stage.sorting
     elapsed = time.perf_counter() - start
     return SortingPipelineResult(
@@ -244,7 +261,7 @@ def _run_sorting_stages(
 ) -> List[PipelineStageResult]:
     stages: List[PipelineStageResult] = []
     current = df.copy()
-    order = [SORTING_STAGES["hdbscan_cycle_period"]]
+    order = [SORTING_STAGES["hdbscan_cycle_period_mht"]]
     ranges = [(0, 100)]
 
     for definition, (start_pct, end_pct) in zip(order, ranges):
@@ -252,15 +269,15 @@ def _run_sorting_stages(
         stage_stream_callback = stream_callback if definition.sorter.lower() == "hdbscan" else None
         stage = _run_sort_stage(current, definition, progress_callback, should_cancel, start_pct, end_pct, stage_stream_callback)
         stage.sorting.data = _add_stage_columns(stage.sorting.data, definition)
-        if definition.stage_id == "hdbscan_cycle_period":
-            stages.extend(_split_hdbscan_cycle_period_stage(stage))
+        if definition.stage_id == "hdbscan_cycle_period_mht":
+            stages.extend(_split_hdbscan_cycle_period_mht_stage(stage))
         else:
             stages.append(stage)
         current = stage.sorting.data
     return stages
 
 
-def _split_hdbscan_cycle_period_stage(stage: PipelineStageResult) -> List[PipelineStageResult]:
+def _split_hdbscan_cycle_period_mht_stage(stage: PipelineStageResult) -> List[PipelineStageResult]:
     data = stage.sorting.data
     if "HDBSCAN_Track_ID" not in data.columns:
         return [stage]
@@ -279,7 +296,11 @@ def _split_hdbscan_cycle_period_stage(stage: PipelineStageResult) -> List[Pipeli
         else "HDBSCAN"
     )
     hdbscan_data = hdbscan_data.drop(
-        columns=[column for column in hdbscan_data.columns if column.startswith("CyclePeriod_")],
+        columns=[
+            column
+            for column in hdbscan_data.columns
+            if column.startswith("CyclePeriod_") or column.startswith("MHT_") or column == "Display_Track_ID"
+        ],
         errors="ignore",
     )
 
@@ -288,10 +309,36 @@ def _split_hdbscan_cycle_period_stage(stage: PipelineStageResult) -> List[Pipeli
         "HDBSCAN",
         stage.sorting.elapsed,
     )
+
+    cycle_data = data.copy()
+    if "CyclePeriod_Track_ID" in cycle_data.columns:
+        cycle_tracks = pd.to_numeric(cycle_data["CyclePeriod_Track_ID"], errors="coerce").fillna(0).astype(int)
+        cycle_data["Track_ID"] = cycle_tracks
+        cycle_data["Assigned"] = (
+            cycle_data["CyclePeriod_Assigned"]
+            if "CyclePeriod_Assigned" in cycle_data.columns
+            else cycle_tracks > 0
+        )
+        cycle_data["Sorting_Method"] = (
+            str(cycle_data["CyclePeriod_Sorting_Method"].dropna().iloc[0])
+            if "CyclePeriod_Sorting_Method" in cycle_data.columns and not cycle_data["CyclePeriod_Sorting_Method"].dropna().empty
+            else "cycle_period-200ms"
+        )
+    cycle_data = cycle_data.drop(
+        columns=[column for column in cycle_data.columns if column.startswith("MHT_") or column == "Display_Track_ID"],
+        errors="ignore",
+    )
+    cycle_sorting = _sorting_output_from_data(
+        _add_stage_columns(cycle_data, SORTING_STAGES["hdbscan_cycle_period"]),
+        "cycle_period-200ms",
+        stage.sorting.elapsed,
+    )
+
     final_sorting = stage.sorting
     return [
         PipelineStageResult(SORTING_STAGES["hdbscan"], hdbscan_sorting, stage.elapsed),
-        PipelineStageResult(SORTING_STAGES["hdbscan_cycle_period"], final_sorting, stage.elapsed),
+        PipelineStageResult(SORTING_STAGES["hdbscan_cycle_period"], cycle_sorting, stage.elapsed),
+        PipelineStageResult(SORTING_STAGES["mht"], final_sorting, stage.elapsed),
     ]
 
 

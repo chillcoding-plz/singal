@@ -24,6 +24,7 @@ RUN_ROOT = PROJECT_ROOT / ".model_runs"
 SORT_MODEL_DIR = PROJECT_ROOT / "分选模型" / "HDBSCAN"
 CYCLE_PERIOD_MODEL_FILE = PROJECT_ROOT / "分选模型" / "WU" / "cycle_period_sort.py"
 CYCLE_PERIOD_BEAT_MODEL_FILE = PROJECT_ROOT / "分选模型" / "WU" / "main5_200ms_sort.py"
+TRACKLET_MHT_MODEL_FILE = PROJECT_ROOT / "分选模型" / "WU" / "tracklet_mht_reduce_batches.py"
 RECOGNITION_MODEL_DIR = PROJECT_ROOT / "识别模型" / "zeng"
 ZENG_TEMPLATE_LIBRARY = RECOGNITION_MODEL_DIR / "outputs_expanded_template_library" / "template_library.json"
 
@@ -401,18 +402,32 @@ def run_hdbscan_sorting(
     streaming_out["CyclePeriod_OurPredID"] = 0
     streaming_out["CyclePeriod_Assigned"] = False
     streaming_out["CyclePeriod_Sorting_Method"] = "cycle_period-200ms"
+    streaming_out["MHT_Track_ID"] = 0
+    streaming_out["MHT_MHTId"] = 0
+    streaming_out["MHT_Assigned"] = False
+    streaming_out["MHT_Sorting_Method"] = "tracklet-MHT-200ms"
     streaming_out["Assigned"] = False
-    streaming_out["Sorting_Method"] = "HDBSCAN+cycle_period-200ms"
+    streaming_out["Sorting_Method"] = "HDBSCAN+cycle_period+MHT-200ms"
     streaming_out["HDBSCAN_Run_Dir"] = str(run_dir)
     streaming_out["HDBSCAN_Beat_Output_Dir"] = str(output_dir)
     streaming_out["CyclePeriod_Run_Dir"] = str(run_dir)
     streaming_out["CyclePeriod_Beat_Output_Dir"] = str(cycle_output_dir)
+    streaming_out["MHT_Run_Dir"] = str(run_dir)
+    streaming_out["MHT_Beat_Input_Dir"] = str(cycle_output_dir)
+    streaming_out["MHT_Beat_Output_Dir"] = str(run_dir / "outputs_tracklet_mht_200ms")
     if zeng_rec_module is not None:
         streaming_out["Predicted_Label"] = ""
         streaming_out["Confidence"] = 0.0
         streaming_out["Recognition_Method"] = "zeng-200ms-live"
         streaming_out["Recognition_Run_Dir"] = str(run_dir)
     stream_state = {"next_row": 0}
+    mht_module = _load_tracklet_mht_module()
+    mht_state = _new_tracklet_mht_state(
+        mht_module,
+        cycle_output_dir,
+        run_dir / "outputs_tracklet_mht_200ms",
+        cycle_cfg.annotated_label_col,
+    )
 
     def on_stream_line(line: str) -> None:
         if not line.startswith("[beat_result]"):
@@ -433,6 +448,7 @@ def run_hdbscan_sorting(
         else:
             cycle_beat = beat_result.copy()
             cycle_beat[cycle_cfg.annotated_label_col] = pd.to_numeric(beat_result["SigIdx"], errors="coerce").fillna(0).astype(int)
+            cycle_beat.to_csv(cycle_file, sep=" ", index=False, float_format="%.9f")
         start = int(stream_state["next_row"])
         end = min(start + len(beat_result), len(streaming_out))
         if end <= start:
@@ -449,15 +465,20 @@ def run_hdbscan_sorting(
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("CyclePeriod_Track_ID")] = cycle_track_ids
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("CyclePeriod_OurPredID")] = cycle_raw_pred
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("CyclePeriod_Assigned")] = cycle_track_ids > 0
-        streaming_out.iloc[start:end, streaming_out.columns.get_loc("Track_ID")] = cycle_track_ids
-        streaming_out.iloc[start:end, streaming_out.columns.get_loc("Assigned")] = cycle_track_ids > 0
+        mht_track_ids = _process_tracklet_mht_beat(mht_state, cycle_file, completed_beats - 1, start)
+        mht_track_ids = mht_track_ids[: end - start]
+        streaming_out.iloc[start:end, streaming_out.columns.get_loc("MHT_Track_ID")] = mht_track_ids
+        streaming_out.iloc[start:end, streaming_out.columns.get_loc("MHT_MHTId")] = mht_track_ids
+        streaming_out.iloc[start:end, streaming_out.columns.get_loc("MHT_Assigned")] = mht_track_ids > 0
+        streaming_out.iloc[start:end, streaming_out.columns.get_loc("Track_ID")] = mht_track_ids
+        streaming_out.iloc[start:end, streaming_out.columns.get_loc("Assigned")] = mht_track_ids > 0
         recognition_suffix = ""
         if zeng_rec_module is not None:
-            window_pdw = _pdw_from_external_beat(beat_result).iloc[: end - start].reset_index(drop=True)
+            window_pdw = _pdw_from_external_beat(cycle_beat).iloc[: end - start].reset_index(drop=True)
             labels, _, confidences = _recognize_zeng_200ms_window(
                 zeng_rec_module,
                 window_pdw,
-                cycle_track_ids,
+                mht_track_ids,
                 zeng_templates,
                 zeng_metadata,
                 zeng_args,
@@ -468,7 +489,7 @@ def run_hdbscan_sorting(
             )
             label_text = ["Unknown" if int(value) == int(zeng_rec_module.UNKNOWN_LABEL) else f"Class_{int(value)}" for value in labels]
             confidence = np.array(
-                [confidences.get(int(track_id), 0.5 if int(track_id) > 0 else 0.0) for track_id in cycle_track_ids],
+                [confidences.get(int(track_id), 0.5 if int(track_id) > 0 else 0.0) for track_id in mht_track_ids],
                 dtype=float,
             )
             streaming_out.iloc[start:end, streaming_out.columns.get_loc("Predicted_Label")] = label_text
@@ -481,7 +502,7 @@ def run_hdbscan_sorting(
             pct,
             (
                 f"200ms节拍流水线：beat {completed_beats}/{total_beats} 完成 "
-                f"(HDBSCAN+cycle_period{recognition_suffix})，进度 {pct}%"
+                f"(HDBSCAN+cycle_period+MHT{recognition_suffix})，进度 {pct}%"
             ),
         )
         if stream_callback is not None:
@@ -520,6 +541,7 @@ def run_hdbscan_sorting(
     if not summary_file.exists():
         raise RuntimeError(f"HDBSCAN 200ms流式分选已结束，但没有生成汇总文件：{summary_file}\n日志文件：{run_dir / 'run.log'}")
     _emit(progress_callback, 100, "200ms节拍流水线全部完成，读取HDBSCAN汇总结果")
+    _finalize_tracklet_mht_state(mht_state)
 
     summary = pd.read_csv(summary_file)
     if "output_file" not in summary.columns:
@@ -545,11 +567,15 @@ def run_hdbscan_sorting(
     cycle_result = _read_main5_annotated_outputs(beat_files, cycle_output_dir, pred_col=cycle_cfg.annotated_label_col)
     if len(cycle_result) != len(df):
         raise ValueError(f"cycle_period 200ms主分选输出行数不匹配：{len(cycle_result)} != {len(df)}")
+    mht_result = _read_main5_annotated_outputs(beat_files, mht_state["output_dir"], pred_col="MHTId")
+    if len(mht_result) != len(df):
+        raise ValueError(f"MHT 200ms细分选输出行数不匹配：{len(mht_result)} != {len(df)}")
 
     out = df.copy()
     hdbscan_track_ids = pd.to_numeric(hdbscan_result["SigIdx"], errors="coerce").fillna(0).astype(int).to_numpy()
     cycle_raw_pred = _raw_cycle_pred_ids(cycle_result[cycle_cfg.annotated_label_col])
     cycle_track_ids = _positive_cycle_track_ids(cycle_raw_pred, hdbscan_track_ids)
+    mht_track_ids = pd.to_numeric(mht_result["MHTId"], errors="coerce").fillna(0).astype(int).to_numpy()
     out["HDBSCAN_Input_Track_ID"] = hdbscan_track_ids
     out["HDBSCAN_Track_ID"] = hdbscan_track_ids
     out["HDBSCAN_Assigned"] = hdbscan_track_ids > 0
@@ -558,16 +584,164 @@ def run_hdbscan_sorting(
     out["CyclePeriod_OurPredID"] = cycle_raw_pred
     out["CyclePeriod_Assigned"] = cycle_track_ids > 0
     out["CyclePeriod_Sorting_Method"] = "cycle_period-200ms"
-    out["Track_ID"] = cycle_track_ids
-    out["Assigned"] = cycle_track_ids > 0
-    out["Sorting_Method"] = "HDBSCAN+cycle_period-200ms"
+    out["MHT_Track_ID"] = mht_track_ids
+    out["MHT_MHTId"] = mht_track_ids
+    out["MHT_Assigned"] = mht_track_ids > 0
+    out["MHT_Sorting_Method"] = "tracklet-MHT-200ms"
+    out["Track_ID"] = mht_track_ids
+    out["Assigned"] = mht_track_ids > 0
+    out["Sorting_Method"] = "HDBSCAN+cycle_period+MHT-200ms"
     out["HDBSCAN_Run_Dir"] = str(run_dir)
     out["HDBSCAN_Beat_Output_Dir"] = str(output_dir)
     out["CyclePeriod_Run_Dir"] = str(run_dir)
     out["CyclePeriod_Beat_Output_Dir"] = str(cycle_output_dir)
+    out["MHT_Run_Dir"] = str(run_dir)
+    out["MHT_Beat_Input_Dir"] = str(cycle_output_dir)
+    out["MHT_Beat_Output_Dir"] = str(mht_state["output_dir"])
     for column in ["Predicted_Label", "Confidence", "Recognition_Method", "Recognition_Run_Dir"]:
         if column in streaming_out.columns:
             out[column] = streaming_out[column].to_numpy()
+    return _add_display_track_ids(out)
+
+
+
+def _load_tracklet_mht_module():
+    if not TRACKLET_MHT_MODEL_FILE.exists():
+        raise FileNotFoundError(f"tracklet MHT 细分选脚本不存在：{TRACKLET_MHT_MODEL_FILE}")
+    module_name = "tracklet_mht_reduce_batches_model"
+    spec = importlib.util.spec_from_file_location(module_name, TRACKLET_MHT_MODEL_FILE)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载 tracklet MHT 细分选脚本：{TRACKLET_MHT_MODEL_FILE}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _new_tracklet_mht_state(module, input_dir: Path, output_dir: Path, id_column: str) -> Dict[str, object]:
+    args = module.build_parser().parse_args([])
+    args.input_dir = Path(input_dir)
+    args.output_dir = Path(output_dir)
+    args.id_column = str(id_column)
+    args.skip_metrics = True
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return {
+        "module": module,
+        "args": args,
+        "input_dir": Path(input_dir),
+        "output_dir": Path(output_dir),
+        "tracks": [],
+        "decisions": [],
+        "frames": [],
+        "mht_chunks": [],
+        "old_batch_ids": set(),
+        "new_batch_ids": set(),
+        "input_id_to_output_id": {},
+        "next_id": 1,
+        "total_tracklets": 0,
+    }
+
+
+def _process_tracklet_mht_beat(state: Dict[str, object], beat_file: Path, fallback: int, global_offset: int) -> np.ndarray:
+    module = state["module"]
+    args = state["args"]
+    df = module.read_one_beat_file(Path(beat_file), int(fallback), int(global_offset))
+    if str(args.id_column) not in df.columns:
+        raise ValueError(f"MHT 细分选输入缺少 {args.id_column} 字段：{beat_file}")
+    tracklets = module.summarize_tracklets(
+        df,
+        int(args.min_tracklet_pulses),
+        str(args.group_mode),
+        str(args.id_column),
+    )
+    mapping, beat_decisions, next_id = module.process_tracklets_into_tracks(
+        tracklets,
+        args,
+        state["tracks"],
+        int(state["next_id"]),
+        input_id_to_output_id=state["input_id_to_output_id"],
+        processed_offset=int(state["total_tracklets"]),
+        total_tracklets=None,
+    )
+    mht_id = module.apply_mapping(df, mapping, str(args.id_column)).astype(np.int64)
+    module.write_reduced_beat_file(df, mht_id, state["output_dir"])
+    state["next_id"] = int(next_id)
+    state["total_tracklets"] = int(state["total_tracklets"]) + len(tracklets)
+    state["decisions"].extend(beat_decisions)
+    state["frames"].append(df)
+    state["mht_chunks"].append(mht_id)
+    state["old_batch_ids"].update(int(v) for v in df[str(args.id_column)].to_numpy(dtype=np.int64) if int(v) >= 0)
+    state["new_batch_ids"].update(int(v) for v in mht_id if int(v) >= 0)
+    return mht_id
+
+
+def _finalize_tracklet_mht_state(state: Dict[str, object]) -> None:
+    if not state["frames"]:
+        return
+    module = state["module"]
+    args = state["args"]
+    df = pd.concat(state["frames"], ignore_index=True)
+    mht_id = np.concatenate(state["mht_chunks"]).astype(np.int64) if state["mht_chunks"] else np.zeros((0,), dtype=np.int64)
+    module.write_reports(state["output_dir"], df, mht_id, state["tracks"], state["decisions"], args)
+    module.write_overall_summary(
+        state["output_dir"],
+        args,
+        len(df),
+        int(state["total_tracklets"]),
+        len(state["old_batch_ids"]),
+        len(state["new_batch_ids"]),
+        {},
+    )
+
+
+
+def _run_tracklet_mht_for_beat_files(
+    beat_files: list[Path],
+    input_dir: Path,
+    run_dir: Path,
+    progress_callback: ProgressCallback = None,
+    should_cancel: CancelCallback = None,
+) -> Dict[str, object]:
+    module = _load_tracklet_mht_module()
+    output_dir = run_dir / "outputs_tracklet_mht_200ms"
+    state = _new_tracklet_mht_state(module, input_dir, output_dir, "OurPredID")
+    total_beats = max(len(beat_files), 1)
+    global_offset = 0
+    for index, source_file in enumerate(beat_files, start=1):
+        _check_cancelled(should_cancel)
+        beat_file = input_dir / Path(source_file).name
+        if not beat_file.exists():
+            raise RuntimeError(f"MHT 细分选缺少 cycle_period beat 输入：{beat_file}")
+        mht_id = _process_tracklet_mht_beat(state, beat_file, index - 1, global_offset)
+        global_offset += len(mht_id)
+        done_pct = int(100 * index / total_beats)
+        _emit(progress_callback, done_pct, f"MHT 细分选：beat {index}/{total_beats} 完成，轨迹数 {len(state['new_batch_ids'])}")
+    _finalize_tracklet_mht_state(state)
+    return state
+
+
+def _apply_tracklet_mht_result(
+    out: pd.DataFrame,
+    beat_files: list[Path],
+    mht_output_dir: Path,
+    run_dir: Path,
+    input_dir: Path,
+) -> pd.DataFrame:
+    mht_result = _read_main5_annotated_outputs(beat_files, mht_output_dir, pred_col="MHTId")
+    if len(mht_result) != len(out):
+        raise ValueError(f"MHT 200ms细分选输出行数不匹配：{len(mht_result)} != {len(out)}")
+    mht_track_ids = pd.to_numeric(mht_result["MHTId"], errors="coerce").fillna(0).astype(int).to_numpy()
+    out = out.copy()
+    out["MHT_Track_ID"] = mht_track_ids
+    out["MHT_MHTId"] = mht_track_ids
+    out["MHT_Assigned"] = mht_track_ids > 0
+    out["MHT_Sorting_Method"] = "tracklet-MHT-200ms"
+    out["Track_ID"] = mht_track_ids
+    out["Assigned"] = mht_track_ids > 0
+    out["Sorting_Method"] = "HDBSCAN+cycle_period+MHT-200ms"
+    out["MHT_Run_Dir"] = str(run_dir)
+    out["MHT_Beat_Input_Dir"] = str(input_dir)
+    out["MHT_Beat_Output_Dir"] = str(mht_output_dir)
     return _add_display_track_ids(out)
 
 
@@ -886,7 +1060,7 @@ def run_cycle_period_sorting(
     if cached_output_dir is not None:
         cached_files = sorted(cached_output_dir.glob("beat_*.txt"))
         if len(cached_files) >= len(beat_files):
-            _emit(progress_callback, 100, f"cycle_period复用已完成的200ms节拍结果：{len(beat_files)} 个beat")
+            _emit(progress_callback, 70, f"cycle_period复用已完成的200ms节拍结果：{len(beat_files)} 个beat")
             out = _apply_cycle_period_beat_result(
                 df,
                 beat_files,
@@ -895,7 +1069,14 @@ def run_cycle_period_sorting(
                 pred_col="OurPredID",
             )
             out["CyclePeriod_Beat_Input_Dir"] = str(beat_input_dir)
-            return out
+            mht_state = _run_tracklet_mht_for_beat_files(
+                beat_files,
+                cached_output_dir,
+                run_dir,
+                progress_callback=progress_callback,
+                should_cancel=should_cancel,
+            )
+            return _apply_tracklet_mht_result(out, beat_files, mht_state["output_dir"], run_dir, cached_output_dir)
 
     _emit(progress_callback, 0, f"cycle_period 200ms主分选准备：总节拍数 {len(beat_files)}")
     output_dir = run_dir / "outputs_cycle_period_200ms"
@@ -918,6 +1099,14 @@ def run_cycle_period_sorting(
     mcfg = module.build_candidate_cfg(cfg)
     summary_rows = []
     total_beats = max(len(beat_files), 1)
+    mht_module = _load_tracklet_mht_module()
+    mht_state = _new_tracklet_mht_state(
+        mht_module,
+        output_dir,
+        run_dir / "outputs_tracklet_mht_200ms",
+        cfg.annotated_label_col,
+    )
+    mht_global_offset = 0
     for index, beat_file in enumerate(beat_files, start=1):
         _check_cancelled(should_cancel)
         start_pct = int(100 * (index - 1) / total_beats)
@@ -927,20 +1116,25 @@ def run_cycle_period_sorting(
             continue
         summary_rows.append(result_row)
         module.persist_stream_summary(result_row, output_dir)
+        cycle_file = output_dir / beat_file.name
+        mht_id = _process_tracklet_mht_beat(mht_state, cycle_file, index - 1, mht_global_offset)
+        mht_global_offset += len(mht_id)
         done_pct = int(100 * index / total_beats)
         _emit(
             progress_callback,
             done_pct,
             (
-                f"cycle_period 200ms主分选：beat {index}/{total_beats} 完成，"
+                f"cycle_period+MHT 200ms：beat {index}/{total_beats} 完成，"
                 f"进度 {done_pct}%，"
-                f"{result_row.get('InputBatches', 0)}->{result_row.get('OutputBatches', 0)} 批"
+                f"{result_row.get('InputBatches', 0)}->{result_row.get('OutputBatches', 0)} 批，"
+                f"MHT轨迹 {len(mht_state['new_batch_ids'])}"
             ),
         )
     summary = pd.DataFrame(summary_rows)
     _check_cancelled(should_cancel)
+    _finalize_tracklet_mht_state(mht_state)
 
-    _emit(progress_callback, 100, "cycle_period 200ms主分选全部beat完成，读取结果")
+    _emit(progress_callback, 100, "cycle_period+MHT 200ms全部beat完成，读取结果")
     result = _read_main5_annotated_outputs(beat_files, output_dir, pred_col=cfg.annotated_label_col)
     if len(result) != len(df):
         raise ValueError(f"cycle_period 200ms 主分选输出行数不匹配：{len(result)} != {len(df)}")
@@ -962,8 +1156,9 @@ def run_cycle_period_sorting(
     out["CyclePeriod_Beat_Output_Dir"] = str(output_dir)
     if summary is not None and len(summary) > 0:
         summary.to_csv(run_dir / "cycle_period_200ms_stream_summary.csv", index=False, encoding="utf-8-sig")
-    _emit(progress_callback, 98, "cycle_period 200ms主分选结果已生成")
-    return _add_display_track_ids(out)
+    out = _apply_tracklet_mht_result(out, beat_files, mht_state["output_dir"], run_dir, output_dir)
+    _emit(progress_callback, 98, "cycle_period+MHT 200ms分选结果已生成")
+    return out
 
 
 def _confidence_by_track(batch_file: Path) -> Dict[int, float]:

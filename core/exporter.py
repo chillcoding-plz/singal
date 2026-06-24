@@ -28,6 +28,13 @@ def export_sorting_csv(df: pd.DataFrame, path: str):
         "CyclePeriod_OurPredID",
         "CyclePeriod_Assigned",
         "CyclePeriod_Sorting_Method",
+        "MHT_Track_ID",
+        "MHT_MHTId",
+        "MHT_Assigned",
+        "MHT_Sorting_Method",
+        "MHT_Run_Dir",
+        "MHT_Beat_Input_Dir",
+        "MHT_Beat_Output_Dir",
     ]
     columns = [col for col in preferred if col in df.columns]
     df[columns].to_csv(path, index=False, encoding="utf-8-sig")
