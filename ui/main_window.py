@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Callable, Dict, Optional
 
 import pandas as pd
+import pyqtgraph as pg
 from PyQt5.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication,
@@ -43,8 +44,10 @@ from core.sorting_algorithms import SortingOutput
 from utils.helpers import format_elapsed
 
 from .charts import (
-    ChartCard,
     TableCard,
+)
+from .pg_charts import (
+    PgChartCard,
     plot_class_stats,
     plot_feature_projection,
     plot_pa_scatter,
@@ -52,10 +55,10 @@ from .charts import (
     plot_pw_scatter,
     plot_quality,
     plot_rf_scatter,
-    render_full_detail_figure,
     plot_sort_scatter,
     plot_timeline,
     plot_track_bars,
+    render_full_detail_pg,
 )
 from .widgets import MethodPanel, RibbonBar, TrackPanel
 
@@ -202,7 +205,7 @@ class AnalysisPage(QWidget):
 
         self.chart_cards = []
         for index, (title, plotter) in enumerate(chart_specs):
-            card = ChartCard(title, compact=self.compact_charts)
+            card = PgChartCard(title, compact=self.compact_charts)
             self.chart_cards.append((card, plotter))
             if table_card is not None and index >= 2:
                 grid.addWidget(card, 1, 1)
@@ -334,13 +337,13 @@ class AnalysisPage(QWidget):
         plot_data = self.track_results if plotter is plot_class_stats and self.track_results is not None else self.data
         plotter(card, plot_data, self._refresh_options, self.track_visibility)
         card.set_detail_renderer(
-            lambda figure,
+            lambda plot_item,
             plotter=plotter,
             data=self.data,
             track_results=self.track_results,
             options=dict(self._refresh_options),
-            visibility=dict(self.track_visibility): render_full_detail_figure(
-                figure,
+            visibility=dict(self.track_visibility): render_full_detail_pg(
+                plot_item,
                 plotter,
                 track_results if plotter is plot_class_stats and track_results is not None else data,
                 track_results,
@@ -426,7 +429,7 @@ class MainWindow(QMainWindow):
                 ("TOA-脉宽", plot_pw_scatter),
                 ("TOA-脉幅", plot_pa_scatter),
                 ("轨迹脉冲统计柱状图", plot_track_bars),
-                ("已分配 / 未分配比例图", plot_quality),
+                ("已分配 / 未分配统计", plot_quality),
             ],
             show_tracks=True,
             show_stage_selector=True,
@@ -1567,8 +1570,10 @@ class MainWindow(QMainWindow):
         if not directory:
             return
         for index, (card, _) in enumerate(page.chart_cards, start=1):
-            filename = f"{index:02d}_{card.title.text().replace('/', '_')}.svg"
-            card.figure.savefig(os.path.join(directory, filename), format="svg", bbox_inches="tight")
+            safe_name = card.title.text().replace("/", "_")
+            filename = f"{index:02d}_{safe_name}.png"
+            exporter = pg.exporters.ImageExporter(card._plot_widget.scene())
+            exporter.export(os.path.join(directory, filename))
         self.log(f"导出图表完成：{directory}")
 
     def export_report_file(self):
