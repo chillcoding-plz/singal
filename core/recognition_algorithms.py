@@ -65,6 +65,48 @@ def _attach_truth_labels(out: pd.DataFrame, results: pd.DataFrame):
     return out, results, accuracy
 
 
+def _build_recognition_from_labeled_data(df: pd.DataFrame) -> RecognitionOutput:
+    out = df.copy()
+    track_ids = pd.to_numeric(out["Track_ID"], errors="coerce").fillna(0).astype(int)
+    rows = []
+    valid = out[track_ids > 0]
+    for track_id, group in valid.groupby("Track_ID", sort=True):
+        pulse_count = int(len(group))
+        predicted_label = str(group["Predicted_Label"].mode().iloc[0]) if pulse_count else "Unknown"
+        rows.append({
+            "Track_ID": int(track_id),
+            "Pulse_Count": pulse_count,
+            "Mean_RF": float(group["RF"].mean()) if "RF" in group else 0.0,
+            "Mean_PW": float(group["PW"].mean()) if "PW" in group else 0.0,
+            "Mean_PRI": float(group["PRI"].mean()) if "PRI" in group else 0.0,
+            "Predicted_Label": predicted_label,
+            "Confidence": float(group["Confidence"].mean()),
+            "Recognition_Method": str(out["Recognition_Method"].iloc[0]) if len(out) else "zeng-200ms-live",
+        })
+    results = pd.DataFrame(rows)
+    out, results, recognition_accuracy = _attach_truth_labels(out, results)
+    if recognition_accuracy is not None:
+        out.attrs["recognition_accuracy"] = recognition_accuracy
+        results.attrs["recognition_accuracy"] = recognition_accuracy
+    output_model = str(out["Recognition_Method"].iloc[0]) if "Recognition_Method" in out.columns and len(out) else "zeng-200ms-live"
+    mean_conf = float(results["Confidence"].mean()) if not results.empty else 0.0
+    class_count = int(results["Predicted_Label"].nunique()) if not results.empty else 0
+    return RecognitionOutput(
+        data=out,
+        track_results=results,
+        model=output_model,
+        elapsed=0.0,
+        mean_confidence=mean_conf,
+        class_count=class_count,
+        summary={
+            "识别轨迹数": int(len(results)),
+            "已识别脉冲数": int((out["Confidence"] > 0).sum()) if "Confidence" in out else 0,
+            "平均置信度": mean_conf,
+            "类别数": class_count,
+        },
+    )
+
+
 def run_recognition(df: pd.DataFrame, model: str, progress_callback=None, should_cancel=None) -> RecognitionOutput:
     start = time.perf_counter()
     if model.lower() == "zeng":

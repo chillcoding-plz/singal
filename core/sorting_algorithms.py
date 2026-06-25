@@ -70,7 +70,7 @@ def _assign_result(df: pd.DataFrame, labels: np.ndarray, method: str, elapsed: f
     )
 
 
-def run_sorting(df: pd.DataFrame, method: str, progress_callback=None, should_cancel=None, stream_callback=None) -> SortingOutput:
+def run_sorting(df: pd.DataFrame, method: str, progress_callback=None, should_cancel=None, stream_callback=None, streaming_zeng=False) -> SortingOutput:
     start = time.perf_counter()
     method_key = method.lower()
 
@@ -80,6 +80,7 @@ def run_sorting(df: pd.DataFrame, method: str, progress_callback=None, should_ca
             progress_callback=progress_callback,
             should_cancel=should_cancel,
             stream_callback=stream_callback,
+            streaming_zeng=streaming_zeng,
         )
         elapsed = time.perf_counter() - start
         assigned = int(out["Assigned"].sum()) if "Assigned" in out else int((out["Track_ID"].astype(int) > 0).sum())

@@ -101,7 +101,7 @@ def zeng_template_library_exists() -> bool:
 
 def write_external_sort(df: pd.DataFrame, path: Path) -> None:
     if "Track_ID" not in df.columns:
-        raise ValueError("zeng 识别需要先完成分选，缺少 Track_ID 字段")
+        raise ValueError("信号识别需要先完成分选，缺少 Track_ID 字段")
     out = pd.DataFrame(
         {
             "TOA(s)": _toa_seconds(df),
@@ -220,20 +220,12 @@ def _hdbscan_progress_from_line(line: str) -> Optional[Tuple[int, str]]:
     if line.startswith("Features:"):
         return 25, "HDBSCAN物理特征构建完成"
 
-    match = re.search(r"\[pa-hdbscan\]\s+windows\s+(\d+)/(\d+)\s+\(([\d.]+)%\)", line)
-    if match:
-        pos = int(match.group(1))
-        total = max(int(match.group(2)), 1)
-        pct = pos / total
-        return int(20 + pct * 60), f"HDBSCAN窗口聚类：{pos}/{total}"
     if line.startswith("Input PDW:"):
         return 8, "HDBSCAN读取输入数据"
     if line.startswith("Pulses:"):
         return 12, line.strip()
     if line.startswith("HDBSCAN backend:"):
         return 14, line.strip()
-    if line.startswith("Features:"):
-        return 20, "HDBSCAN物理特征构建完成"
     if "[pa-hdbscan] merging tracklets" in line:
         return 82, "HDBSCAN轨迹片段合并"
     if "Summary:" in line:
@@ -339,6 +331,7 @@ def run_hdbscan_sorting(
     progress_callback: ProgressCallback = None,
     should_cancel: CancelCallback = None,
     stream_callback: StreamCallback = None,
+    streaming_zeng: bool = False,
 ) -> pd.DataFrame:
     if not SORT_MODEL_DIR.exists():
         raise FileNotFoundError(f"分选模型目录不存在：{SORT_MODEL_DIR}")
@@ -350,14 +343,14 @@ def run_hdbscan_sorting(
 
     run_dir = _run_dir("hdbscan_sort")
     print(f"[HDBSCAN] run_dir={run_dir}", flush=True)
-    _emit(progress_callback, 3, f"HDBSCAN运行目录：{run_dir}")
+    _emit(progress_callback, 3, f"运行目录：{run_dir}")
     pdw_file = run_dir / "input_pdw.txt"
     output_dir = run_dir / "outputs_streaming_200ms"
     temp_dir = output_dir / "_tmp"
     summary_file = output_dir / "streaming_200ms_summary.csv"
     cycle_output_dir = run_dir / "outputs_cycle_period_200ms"
     total_beats = max(_beat_count_for_dataframe(df), 1)
-    _emit(progress_callback, 6, "HDBSCAN准备200ms流式分选输入")
+    _emit(progress_callback, 6, "准备200ms流式分选输入")
     write_external_pdw(df, pdw_file)
     cycle_module = _load_cycle_period_beat_module()
     cycle_cfg = cycle_module.MainSortConfig(
@@ -382,7 +375,7 @@ def run_hdbscan_sorting(
     zeng_label_scales: Dict[int, float] = {}
     zeng_min_margin = 0.0
     zeng_class_floor_scale = 0.4
-    if stream_callback is not None and zeng_template_library_exists():
+    if stream_callback is not None and streaming_zeng and zeng_template_library_exists():
         zeng_rec_module = _load_zeng_recognition_module()
         zeng_args = _zeng_200ms_args()
         zeng_templates, zeng_metadata = zeng_rec_module.load_template_library(ZENG_TEMPLATE_LIBRARY)
@@ -407,7 +400,7 @@ def run_hdbscan_sorting(
     streaming_out["MHT_Assigned"] = False
     streaming_out["MHT_Sorting_Method"] = "tracklet-MHT-200ms"
     streaming_out["Assigned"] = False
-    streaming_out["Sorting_Method"] = "HDBSCAN+cycle_period+MHT-200ms"
+    streaming_out["Sorting_Method"] = "预分选 → 主分选 → 细分选"
     streaming_out["HDBSCAN_Run_Dir"] = str(run_dir)
     streaming_out["HDBSCAN_Beat_Output_Dir"] = str(output_dir)
     streaming_out["CyclePeriod_Run_Dir"] = str(run_dir)
@@ -418,7 +411,7 @@ def run_hdbscan_sorting(
     if zeng_rec_module is not None:
         streaming_out["Predicted_Label"] = ""
         streaming_out["Confidence"] = 0.0
-        streaming_out["Recognition_Method"] = "zeng-200ms-live"
+        streaming_out["Recognition_Method"] = "zeng"
         streaming_out["Recognition_Run_Dir"] = str(run_dir)
     stream_state = {"next_row": 0}
     mht_module = _load_tracklet_mht_module()
@@ -439,6 +432,13 @@ def run_hdbscan_sorting(
         beat_result = pd.read_csv(beat_file, sep=r"\s+", engine="python")
         if "SigIdx" not in beat_result.columns:
             return
+        completed_beats = min(int(event.get("beat", 0)) + 1, total_beats)
+        prev_pct = int(100 * (completed_beats - 1) / total_beats) if completed_beats > 1 else 0
+        full_pct = int(100 * completed_beats / total_beats)
+        has_mode_attr = zeng_rec_module is not None
+        stage_count = 5 if has_mode_attr else (4 if zeng_rec_module is not None else 3)
+        sub_step = max(1, (full_pct - prev_pct) // stage_count)
+        _emit(progress_callback, prev_pct + sub_step, f"beat {completed_beats}/{total_beats}，预分选完成")
         cycle_result = cycle_module.process_one_streaming_beat(beat_file, cycle_cfg, cycle_mcfg, cycle_output_dir)
         if cycle_result is not None:
             cycle_module.persist_stream_summary(cycle_result, cycle_output_dir)
@@ -458,13 +458,13 @@ def run_hdbscan_sorting(
         raw_cycle_sigidx = pd.to_numeric(cycle_beat[cycle_cfg.annotated_label_col], errors="coerce").to_numpy()[: end - start]
         cycle_raw_pred = _raw_cycle_pred_ids(raw_cycle_sigidx)[: end - start]
         cycle_track_ids = _positive_cycle_track_ids(cycle_raw_pred, hdbscan_sigidx)
-        completed_beats = min(int(event.get("beat", 0)) + 1, total_beats)
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("HDBSCAN_Input_Track_ID")] = hdbscan_sigidx
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("HDBSCAN_Track_ID")] = hdbscan_sigidx
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("HDBSCAN_Assigned")] = hdbscan_sigidx > 0
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("CyclePeriod_Track_ID")] = cycle_track_ids
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("CyclePeriod_OurPredID")] = cycle_raw_pred
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("CyclePeriod_Assigned")] = cycle_track_ids > 0
+        _emit(progress_callback, prev_pct + 2 * sub_step, f"beat {completed_beats}/{total_beats}，主分选完成")
         mht_track_ids = _process_tracklet_mht_beat(mht_state, cycle_file, completed_beats - 1, start)
         mht_track_ids = mht_track_ids[: end - start]
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("MHT_Track_ID")] = mht_track_ids
@@ -472,7 +472,7 @@ def run_hdbscan_sorting(
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("MHT_Assigned")] = mht_track_ids > 0
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("Track_ID")] = mht_track_ids
         streaming_out.iloc[start:end, streaming_out.columns.get_loc("Assigned")] = mht_track_ids > 0
-        recognition_suffix = ""
+        _emit(progress_callback, prev_pct + 3 * sub_step, f"beat {completed_beats}/{total_beats}，细分选完成")
         if zeng_rec_module is not None:
             window_pdw = _pdw_from_external_beat(cycle_beat).iloc[: end - start].reset_index(drop=True)
             labels, _, confidences = _recognize_zeng_200ms_window(
@@ -494,23 +494,24 @@ def run_hdbscan_sorting(
             )
             streaming_out.iloc[start:end, streaming_out.columns.get_loc("Predicted_Label")] = label_text
             streaming_out.iloc[start:end, streaming_out.columns.get_loc("Confidence")] = confidence
-            recognition_suffix = "+zeng识别"
+            if has_mode_attr:
+                _emit(progress_callback, prev_pct + 4 * sub_step, f"beat {completed_beats}/{total_beats}，信号完成")
         stream_state["next_row"] = end
-        pct = int(100 * completed_beats / total_beats)
+        if has_mode_attr:
+            final_label = "信号识别完成"
+        else:
+            final_label = "信号识别" if zeng_rec_module is not None else "分选"
         _emit(
             progress_callback,
-            pct,
-            (
-                f"200ms节拍流水线：beat {completed_beats}/{total_beats} 完成 "
-                f"(HDBSCAN+cycle_period+MHT{recognition_suffix})，进度 {pct}%"
-            ),
+            full_pct,
+            f"beat {completed_beats}/{total_beats}，{final_label}，进度 {full_pct}%",
         )
         if stream_callback is not None:
             stream_callback(_add_display_track_ids(streaming_out))
 
     script = SORT_MODEL_DIR / "streaming_200ms_sort.py"
     if not script.exists():
-        raise FileNotFoundError(f"HDBSCAN 200ms流式分选脚本不存在：{script}")
+        raise FileNotFoundError(f"流式分选脚本不存在：{script}")
 
     command = [
         sys.executable,
@@ -539,13 +540,13 @@ def run_hdbscan_sorting(
     )
 
     if not summary_file.exists():
-        raise RuntimeError(f"HDBSCAN 200ms流式分选已结束，但没有生成汇总文件：{summary_file}\n日志文件：{run_dir / 'run.log'}")
-    _emit(progress_callback, 100, "200ms节拍流水线全部完成，读取HDBSCAN汇总结果")
+        raise RuntimeError(f"信号分选已结束，但没有生成汇总文件：{summary_file}\n日志文件：{run_dir / 'run.log'}")
+    _emit(progress_callback, 100, "全流程已完成")
     _finalize_tracklet_mht_state(mht_state)
 
     summary = pd.read_csv(summary_file)
     if "output_file" not in summary.columns:
-        raise ValueError(f"HDBSCAN 200ms流式分选汇总缺少 output_file 字段：{summary_file}")
+        raise ValueError(f"信号分选汇总缺少 output_file 字段：{summary_file}")
 
     beat_files = []
     beat_results = []
@@ -554,22 +555,22 @@ def run_hdbscan_sorting(
         if not beat_file.is_absolute():
             beat_file = output_dir / beat_file
         if not beat_file.exists():
-            raise RuntimeError(f"HDBSCAN 200ms流式分选缺少beat结果文件：{beat_file}\n日志文件：{run_dir / 'run.log'}")
+            raise RuntimeError(f"信号分选缺少beat结果文件：{beat_file}\n日志文件：{run_dir / 'run.log'}")
         beat_files.append(beat_file)
         beat_results.append(pd.read_csv(beat_file, sep=r"\s+", engine="python"))
 
     hdbscan_result = pd.concat(beat_results, ignore_index=True) if beat_results else pd.DataFrame()
     if "SigIdx" not in hdbscan_result.columns:
-        raise ValueError(f"HDBSCAN 200ms流式分选输出缺少 SigIdx 字段：{summary_file}")
+        raise ValueError(f"预分选输出缺少 SigIdx 字段：{summary_file}")
     if len(hdbscan_result) != len(df):
-        raise ValueError(f"HDBSCAN 200ms流式分选输出行数不匹配：{len(hdbscan_result)} != {len(df)}")
+        raise ValueError(f"预分选输出行数不匹配：{len(hdbscan_result)} != {len(df)}")
 
     cycle_result = _read_main5_annotated_outputs(beat_files, cycle_output_dir, pred_col=cycle_cfg.annotated_label_col)
     if len(cycle_result) != len(df):
-        raise ValueError(f"cycle_period 200ms主分选输出行数不匹配：{len(cycle_result)} != {len(df)}")
+        raise ValueError(f"主分选输出行数不匹配：{len(cycle_result)} != {len(df)}")
     mht_result = _read_main5_annotated_outputs(beat_files, mht_state["output_dir"], pred_col="MHTId")
     if len(mht_result) != len(df):
-        raise ValueError(f"MHT 200ms细分选输出行数不匹配：{len(mht_result)} != {len(df)}")
+        raise ValueError(f"细分选输出行数不匹配：{len(mht_result)} != {len(df)}")
 
     out = df.copy()
     hdbscan_track_ids = pd.to_numeric(hdbscan_result["SigIdx"], errors="coerce").fillna(0).astype(int).to_numpy()
@@ -607,11 +608,11 @@ def run_hdbscan_sorting(
 
 def _load_tracklet_mht_module():
     if not TRACKLET_MHT_MODEL_FILE.exists():
-        raise FileNotFoundError(f"tracklet MHT 细分选脚本不存在：{TRACKLET_MHT_MODEL_FILE}")
+        raise FileNotFoundError(f"细分选脚本不存在：{TRACKLET_MHT_MODEL_FILE}")
     module_name = "tracklet_mht_reduce_batches_model"
     spec = importlib.util.spec_from_file_location(module_name, TRACKLET_MHT_MODEL_FILE)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"无法加载 tracklet MHT 细分选脚本：{TRACKLET_MHT_MODEL_FILE}")
+        raise RuntimeError(f"无法加载细分选脚本：{TRACKLET_MHT_MODEL_FILE}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
@@ -711,11 +712,11 @@ def _run_tracklet_mht_for_beat_files(
         _check_cancelled(should_cancel)
         beat_file = input_dir / Path(source_file).name
         if not beat_file.exists():
-            raise RuntimeError(f"MHT 细分选缺少 cycle_period beat 输入：{beat_file}")
+            raise RuntimeError(f"细分选缺少主分选输入：{beat_file}")
         mht_id = _process_tracklet_mht_beat(state, beat_file, index - 1, global_offset)
         global_offset += len(mht_id)
         done_pct = int(100 * index / total_beats)
-        _emit(progress_callback, done_pct, f"MHT 细分选：beat {index}/{total_beats} 完成，轨迹数 {len(state['new_batch_ids'])}")
+        _emit(progress_callback, done_pct, f"细分选：beat {index}/{total_beats} 完成，轨迹数 {len(state['new_batch_ids'])}")
     _finalize_tracklet_mht_state(state)
     return state
 
@@ -729,7 +730,7 @@ def _apply_tracklet_mht_result(
 ) -> pd.DataFrame:
     mht_result = _read_main5_annotated_outputs(beat_files, mht_output_dir, pred_col="MHTId")
     if len(mht_result) != len(out):
-        raise ValueError(f"MHT 200ms细分选输出行数不匹配：{len(mht_result)} != {len(out)}")
+        raise ValueError(f"细分选输出行数不匹配：{len(mht_result)} != {len(out)}")
     mht_track_ids = pd.to_numeric(mht_result["MHTId"], errors="coerce").fillna(0).astype(int).to_numpy()
     out = out.copy()
     out["MHT_Track_ID"] = mht_track_ids
@@ -747,11 +748,11 @@ def _apply_tracklet_mht_result(
 
 def _load_cycle_period_module():
     if not CYCLE_PERIOD_MODEL_FILE.exists():
-        raise FileNotFoundError(f"cycle_period 模型文件不存在：{CYCLE_PERIOD_MODEL_FILE}")
+        raise FileNotFoundError(f"主分选模型文件不存在：{CYCLE_PERIOD_MODEL_FILE}")
     module_name = "cycle_period_sort_model"
     spec = importlib.util.spec_from_file_location(module_name, CYCLE_PERIOD_MODEL_FILE)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"无法加载 cycle_period 模型文件：{CYCLE_PERIOD_MODEL_FILE}")
+        raise RuntimeError(f"无法加载主分选模型文件：{CYCLE_PERIOD_MODEL_FILE}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
@@ -760,11 +761,11 @@ def _load_cycle_period_module():
 
 def _load_cycle_period_beat_module():
     if not CYCLE_PERIOD_BEAT_MODEL_FILE.exists():
-        raise FileNotFoundError(f"200ms cycle_period 主分选脚本不存在：{CYCLE_PERIOD_BEAT_MODEL_FILE}")
+        raise FileNotFoundError(f"主分选主分选脚本不存在：{CYCLE_PERIOD_BEAT_MODEL_FILE}")
     module_name = "cycle_period_200ms_main5_model"
     spec = importlib.util.spec_from_file_location(module_name, CYCLE_PERIOD_BEAT_MODEL_FILE)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"无法加载 200ms cycle_period 主分选脚本：{CYCLE_PERIOD_BEAT_MODEL_FILE}")
+        raise RuntimeError(f"无法加载主分选脚本：{CYCLE_PERIOD_BEAT_MODEL_FILE}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
@@ -774,11 +775,11 @@ def _load_cycle_period_beat_module():
 def _load_zeng_recognition_module():
     script = RECOGNITION_MODEL_DIR / "template_match_recognition.py"
     if not script.exists():
-        raise FileNotFoundError(f"zeng 模板匹配脚本不存在：{script}")
+        raise FileNotFoundError(f"信号识别模板匹配脚本不存在：{script}")
     module_name = "zeng_template_match_recognition_model"
     spec = importlib.util.spec_from_file_location(module_name, script)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"无法加载 zeng 模板匹配脚本：{script}")
+        raise RuntimeError(f"无法加载信号识别模板匹配脚本：{script}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
@@ -963,7 +964,7 @@ def _apply_cycle_period_beat_result(
 ) -> pd.DataFrame:
     result = _read_main5_annotated_outputs(beat_files, output_dir, pred_col=pred_col)
     if len(result) != len(df):
-        raise ValueError(f"cycle_period 200ms 主分选输出行数不匹配：{len(result)} != {len(df)}")
+        raise ValueError(f"主分选输出行数不匹配：{len(result)} != {len(df)}")
     source_sigidx = result["SigIdx"] if "SigIdx" in result.columns else df.get("HDBSCAN_Input_Track_ID", df.get("Track_ID"))
     raw_pred = _raw_cycle_pred_ids(result[pred_col])
     pred_tracks = _positive_cycle_track_ids(raw_pred, source_sigidx)
@@ -1043,7 +1044,7 @@ def run_cycle_period_sorting(
     should_cancel: CancelCallback = None,
 ) -> pd.DataFrame:
     if "Track_ID" not in df.columns:
-        raise ValueError("cycle_period 需要先完成 HDBSCAN 分选，缺少 Track_ID 字段")
+        raise ValueError("主分选需要先完成预分选，缺少 Track_ID 字段")
     _require_modules(
         "cycle_period 200ms 主分选",
         {"numpy": "numpy", "pandas": "pandas"},
@@ -1191,15 +1192,37 @@ def run_zeng_recognition(
         f"python -m pip install -r {RECOGNITION_MODEL_DIR / 'requirements.txt'}",
     )
     if "Track_ID" not in df.columns:
-        raise ValueError("zeng 识别需要先完成分选，缺少 Track_ID 字段")
+        raise ValueError("信号识别需要先完成分选，缺少 Track_ID 字段")
+
+    # 如果流式分选阶段已经完成了识别，直接复用已有标签，不再跑全量外部脚本
+    if "Predicted_Label" in df.columns and "Confidence" in df.columns and "Recognition_Method" in df.columns:
+        _emit(progress_callback, 90, "复用流式识别结果，跳过全量信号识别")
+        out = df.copy()
+        track_ids = pd.to_numeric(out["Track_ID"], errors="coerce").fillna(0).astype(int)
+        rows = []
+        valid = out[track_ids > 0]
+        for track_id, group in valid.groupby("Track_ID", sort=True):
+            pulse_count = int(len(group))
+            predicted_label = str(group["Predicted_Label"].mode().iloc[0]) if pulse_count else "Unknown"
+            rows.append({
+                "Track_ID": int(track_id),
+                "Pulse_Count": pulse_count,
+                "Mean_RF": float(group["RF"].mean()) if "RF" in group else 0.0,
+                "Mean_PW": float(group["PW"].mean()) if "PW" in group else 0.0,
+                "Mean_PRI": float(group["PRI"].mean()) if "PRI" in group else 0.0,
+                "Predicted_Label": predicted_label,
+                "Confidence": float(group["Confidence"].mean()),
+                "Recognition_Method": str(out["Recognition_Method"].iloc[0]) if len(out) else "zeng-200ms-live",
+            })
+        return out, pd.DataFrame(rows)
 
     template_library = zeng_template_library_path()
     if not template_library.exists():
-        raise FileNotFoundError(f"zeng 识别需要训练生成模板库，当前缺少：{template_library}")
+        raise FileNotFoundError(f"信号识别需要训练生成模板库，当前缺少：{template_library}")
 
     run_dir = _run_dir("zeng_200ms_recognition")
     print(f"[zeng] run_dir={run_dir}", flush=True)
-    _emit(progress_callback, 5, f"zeng 200ms运行目录：{run_dir}")
+    _emit(progress_callback, 5, f"信号识别运行目录：{run_dir}")
     pdw_file = run_dir / "input_pdw.txt"
     sort_file = run_dir / "input_sort.txt"
     output_dir = run_dir / "output"
@@ -1208,7 +1231,7 @@ def run_zeng_recognition(
 
     script = RECOGNITION_MODEL_DIR / "template_match_recognition_200ms.py"
     if not script.exists():
-        raise FileNotFoundError(f"zeng 200ms识别脚本不存在：{script}")
+        raise FileNotFoundError(f"信号识别脚本不存在：{script}")
     command = [
         sys.executable,
         "-u",
@@ -1297,9 +1320,9 @@ def run_zeng_template_training(
 
     output_dir = RECOGNITION_MODEL_DIR / "outputs_expanded_template_library"
     run_dir = _run_dir("zeng_template_training")
-    _emit(progress_callback, 5, f"zeng训练数据目录：{train_path}")
+    _emit(progress_callback, 5, f"识别算法训练数据目录：{train_path}")
 
-    _emit(progress_callback, 20, "生成 zeng 模板库")
+    _emit(progress_callback, 20, "生成模板库")
     build_command = [
         sys.executable,
         "-u",
@@ -1316,7 +1339,7 @@ def run_zeng_template_training(
     if not template_library.exists():
         raise RuntimeError(f"模板库生成结束，但没有找到：{template_library}")
 
-    _emit(progress_callback, 70, "调优 zeng 模板匹配参数")
+    _emit(progress_callback, 70, "调优模板匹配参数")
     tune_command = [
         sys.executable,
         "-u",
@@ -1332,7 +1355,7 @@ def run_zeng_template_training(
     if not tuned_parameters.exists():
         raise RuntimeError(f"模板参数调优结束，但没有找到：{tuned_parameters}")
 
-    _emit(progress_callback, 98, "zeng 模板库更新完成")
+    _emit(progress_callback, 98, "模板库更新完成")
     return {
         "train_dir": str(train_path),
         "class_count": len(class_files),

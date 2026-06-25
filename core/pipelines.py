@@ -61,10 +61,10 @@ SORTING_STAGES: Dict[str, SortingStageDefinition] = {
 }
 
 SORTING_PIPELINE_ID = "sorting_pipeline"
-SORTING_PIPELINE_NAME = "HDBSCAN → cycle_period → MHT"
-IMPORTED_HDBSCAN_PIPELINE_NAME = "HDBSCAN（导入）→ cycle_period → MHT"
+SORTING_PIPELINE_NAME = "预分选 → 主分选 → 细分选"
+IMPORTED_HDBSCAN_PIPELINE_NAME = "预分选 → 主分选 → 细分选"
 FULL_PIPELINE_ID = "full"
-FULL_PIPELINE_NAME = "HDBSCAN → cycle_period → MHT → zeng"
+FULL_PIPELINE_NAME = "预分选 → 主分选 → 细分选 → 信号识别"
 RECOGNITION_MODEL = "zeng"
 
 PIPELINE_LABELS: Dict[str, str] = {SORTING_PIPELINE_ID: SORTING_PIPELINE_NAME}
@@ -94,9 +94,10 @@ def run_sorting_pipeline(
     progress_callback: ProgressCallback = None,
     should_cancel: CancelCallback = None,
     stream_callback=None,
+    streaming_zeng: bool = False,
 ) -> SortingPipelineResult:
     start = time.perf_counter()
-    stages = _run_sorting_stages(df, progress_callback, should_cancel, stream_callback)
+    stages = _run_sorting_stages(df, progress_callback, should_cancel, stream_callback, streaming_zeng=streaming_zeng)
     final_sorting = stages[-1].sorting
     elapsed = time.perf_counter() - start
     return SortingPipelineResult(
@@ -178,6 +179,7 @@ def run_pipeline(
     progress_callback: ProgressCallback = None,
     should_cancel: CancelCallback = None,
     stream_callback=None,
+    streaming_zeng_done: bool = False,
 ) -> PipelineRunResult:
     start = time.perf_counter()
     if pipeline_id != FULL_PIPELINE_ID:
@@ -185,9 +187,10 @@ def run_pipeline(
 
     sorting_pipeline = run_sorting_pipeline(
         df,
-        progress_callback=_scale_progress(progress_callback, 0, 78, SORTING_PIPELINE_NAME),
+        progress_callback=_scale_progress(progress_callback, 0, 78, ""),
         should_cancel=should_cancel,
         stream_callback=stream_callback,
+        streaming_zeng=streaming_zeng_done,
     )
     return _run_recognition_after_sorting_pipeline(
         sorting_pipeline,
@@ -195,6 +198,7 @@ def run_pipeline(
         start,
         progress_callback,
         should_cancel,
+        streaming_zeng_done=streaming_zeng_done,
     )
 
 
@@ -206,7 +210,7 @@ def run_pipeline_from_hdbscan(
     start = time.perf_counter()
     sorting_pipeline = run_cycle_period_pipeline_from_hdbscan(
         df,
-        progress_callback=_scale_progress(progress_callback, 0, 78, IMPORTED_HDBSCAN_PIPELINE_NAME),
+        progress_callback=progress_callback,
         should_cancel=should_cancel,
     )
     return _run_recognition_after_sorting_pipeline(
@@ -224,15 +228,23 @@ def _run_recognition_after_sorting_pipeline(
     start: float,
     progress_callback: ProgressCallback = None,
     should_cancel: CancelCallback = None,
+    streaming_zeng_done: bool = False,
 ) -> PipelineRunResult:
     final_sorting = sorting_pipeline.sorting
-    _emit(progress_callback, 79, "zeng：准备识别 cycle_period 分选结果")
-    recognition = run_recognition(
-        final_sorting.data,
-        RECOGNITION_MODEL,
-        progress_callback=_scale_progress(progress_callback, 79, 98, "zeng 识别"),
-        should_cancel=should_cancel,
-    )
+    data = final_sorting.data
+
+    if streaming_zeng_done:
+        _emit(progress_callback, 85, "复用流式识别结果")
+        from .recognition_algorithms import _build_recognition_from_labeled_data
+        recognition = _build_recognition_from_labeled_data(data)
+    else:
+        _emit(progress_callback, 79, "准备识别分选结果")
+        recognition = run_recognition(
+            data,
+            RECOGNITION_MODEL,
+            progress_callback=_scale_progress(progress_callback, 79, 98, "zeng"),
+            should_cancel=should_cancel,
+        )
     _check_cancelled(should_cancel)
 
     elapsed = time.perf_counter() - start
@@ -258,6 +270,7 @@ def _run_sorting_stages(
     progress_callback: ProgressCallback = None,
     should_cancel: CancelCallback = None,
     stream_callback=None,
+    streaming_zeng: bool = False,
 ) -> List[PipelineStageResult]:
     stages: List[PipelineStageResult] = []
     current = df.copy()
@@ -267,7 +280,7 @@ def _run_sorting_stages(
     for definition, (start_pct, end_pct) in zip(order, ranges):
         _check_cancelled(should_cancel)
         stage_stream_callback = stream_callback if definition.sorter.lower() == "hdbscan" else None
-        stage = _run_sort_stage(current, definition, progress_callback, should_cancel, start_pct, end_pct, stage_stream_callback)
+        stage = _run_sort_stage(current, definition, progress_callback, should_cancel, start_pct, end_pct, stage_stream_callback, streaming_zeng=streaming_zeng)
         stage.sorting.data = _add_stage_columns(stage.sorting.data, definition)
         if definition.stage_id == "hdbscan_cycle_period_mht":
             stages.extend(_split_hdbscan_cycle_period_mht_stage(stage))
@@ -350,15 +363,17 @@ def _run_sort_stage(
     start_pct: int = 0,
     end_pct: int = 98,
     stream_callback=None,
+    streaming_zeng: bool = False,
 ) -> PipelineStageResult:
     start = time.perf_counter()
-    _emit(progress_callback, start_pct, f"{definition.name}：准备分选")
+    _emit(progress_callback, start_pct, "准备分选")
     sorting = run_sorting(
         df,
         definition.sorter,
-        progress_callback=_scale_progress(progress_callback, start_pct, end_pct, f"{definition.name} 分选"),
+        progress_callback=_scale_progress(progress_callback, start_pct, end_pct, ""),
         should_cancel=should_cancel,
         stream_callback=stream_callback,
+        streaming_zeng=streaming_zeng,
     )
     _check_cancelled(should_cancel)
     return PipelineStageResult(
@@ -415,7 +430,10 @@ def _scale_progress(
     def emit(value: int, text: str) -> None:
         value = max(0, min(100, int(value)))
         scaled = start_pct + int((end_pct - start_pct) * value / 100)
-        progress_callback(max(0, min(100, scaled)), f"{prefix}：{text}")
+        if prefix:
+            progress_callback(max(0, min(100, scaled)), f"{prefix}：{text}")
+        else:
+            progress_callback(max(0, min(100, scaled)), text)
 
     return emit
 

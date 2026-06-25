@@ -468,7 +468,7 @@ class MainWindow(QMainWindow):
         self.export_ribbon.truth_btn.setText("导入识别结果")
         self.export_ribbon.truth_btn.set_icon_kind("import")
         self.export_ribbon.truth_btn.setVisible(True)
-        self.export_ribbon.run_btn.setText("模式属性分析")
+        self.export_ribbon.run_btn.setText("工作模式/功能属性分析")
         self.export_ribbon.method_btn.setText("导出 JSON")
         self.export_ribbon.method_btn.set_icon_kind("export")
         self.export_ribbon.compare_btn.setText("导出 CSV")
@@ -859,7 +859,7 @@ class MainWindow(QMainWindow):
             return
         output_base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".model_runs")
         self.export_run_state_label.setText("Running")
-        self.log("Radar mode/function attribute analysis started")
+        self.log("工作模式/功能属性识别开始")
         self._run_background(
             lambda df, out_dir, progress_callback=None, should_cancel=None, stream_callback=None: run_radar_attribute_pipeline(
                 df,
@@ -871,7 +871,7 @@ class MainWindow(QMainWindow):
             data,
             output_base_dir,
             done=self._on_radar_dashboard_done,
-            stages=("准备模式属性输入", "工作模式/功能属性分析运行中", "刷新结果导出页"),
+            stages=("准备工作模式/功能属性输入", "工作模式/功能属性分析运行中", "刷新结果导出页"),
             pass_progress=True,
             animate_progress=False,
             stream_updates=True,
@@ -913,7 +913,7 @@ class MainWindow(QMainWindow):
         }
         with open(path, "w", encoding="utf-8") as file:
             json.dump(payload, file, ensure_ascii=False, indent=2)
-        self.log(f"导出模式属性 JSON：{path}")
+        self.log(f"导出工作模式/功能属性 JSON：{path}")
 
     def export_radar_dashboard_csv(self):
         output = self._require_radar_dashboard()
@@ -924,7 +924,7 @@ class MainWindow(QMainWindow):
             return
         segments = output.segments if output.segments is not None else pd.DataFrame()
         segments.to_csv(path, index=False, encoding="utf-8-sig")
-        self.log(f"导出模式属性 CSV：{path}")
+        self.log(f"导出工作模式/功能属性 CSV：{path}")
 
     def open_radar_dashboard_dir(self):
         output = self._require_radar_dashboard()
@@ -950,19 +950,24 @@ class MainWindow(QMainWindow):
         log_box.addWidget(title)
         log_box.addWidget(self.log_edit, 1)
         layout.addLayout(log_box, 3)
-        status_box = QVBoxLayout()
+        status_panel = QWidget()
+        status_panel.setFixedWidth(373)
+        status_box = QVBoxLayout(status_panel)
+        status_box.setContentsMargins(0, 0, 0, 0)
         status_title = QLabel("运行状态")
         status_title.setProperty("class", "sectionTitle")
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.step_label = QLabel("当前操作：等待操作")
+        self.step_label.setWordWrap(True)
         self.elapsed_label = QLabel("本次耗时：00:00:00.000")
+        self.elapsed_label.setWordWrap(True)
         status_box.addWidget(status_title)
         status_box.addWidget(self.progress)
         status_box.addWidget(self.step_label)
         status_box.addWidget(self.elapsed_label)
         status_box.addStretch(1)
-        layout.addLayout(status_box, 1)
+        layout.addWidget(status_panel)
         return frame
 
     def _status_bar(self):
@@ -1607,7 +1612,7 @@ class MainWindow(QMainWindow):
     def _on_zeng_template_training_done(self, result: Dict[str, object], elapsed: float):
         self._finish_status("zeng 模板库生成", elapsed)
         self.log(
-            "zeng 模板库生成完成："
+            "模板库生成完成："
             f"类别文件 {result.get('class_count')} 个，"
             f"模板库 {result.get('template_library')}，"
             f"调参文件 {result.get('tuned_parameters')}，"
@@ -1632,7 +1637,7 @@ class MainWindow(QMainWindow):
                 animate_progress=False,
             )
             return
-        self.log("两阶段分选开始：HDBSCAN → cycle_period")
+        self.log("三阶段分选开始：预分选 → 主分选 → 细分选")
         self._run_background(
             lambda df, progress_callback=None, should_cancel=None, stream_callback=None: run_sorting_pipeline(
                 df,
@@ -1642,7 +1647,7 @@ class MainWindow(QMainWindow):
             ),
             self.data.copy(),
             done=self._on_sorting_pipeline_done,
-            stages=("准备分选数据", "两阶段分选流程运行中", "刷新两阶段分选结果"),
+            stages=("准备分选数据", "三阶段分选流程运行中", "刷新三阶段分选结果"),
             pass_progress=True,
             animate_progress=False,
             stream_updates=True,
@@ -1655,29 +1660,18 @@ class MainWindow(QMainWindow):
         if not self._ensure_zeng_template_ready():
             return
         self.pipeline_result_target_page = "export"
-        self.log("主页全链路开始：200ms beat 级 HDBSCAN → cycle_period → MHT → zeng识别 → 工作模式/功能属性分析")
+        self.log("全流程开始：预分选 → 主分选 → 细分选 → 信号识别 → 工作模式/功能属性分析")
         self._run_background(
             self._run_home_full_chain,
             self.data.copy(),
             FULL_PIPELINE_ID,
             done=self._on_home_full_chain_done,
-            stages=("准备全链路数据", "200ms beat级分选、识别与模式属性分析运行中", "刷新全链路结果"),
+            stages=("准备全流程数据", "信号分选、信号识别、工作模式/功能属性分析运行中", "刷新全流程结果"),
             pass_progress=True,
             animate_progress=False,
             stream_updates=True,
             stream_recognition=True,
         )
-
-    def _scale_home_progress(self, progress_callback, start_pct: int, end_pct: int, prefix: str):
-        if progress_callback is None:
-            return None
-
-        def emit(value: int, text: str):
-            value = max(0, min(100, int(value)))
-            scaled = start_pct + int((end_pct - start_pct) * value / 100)
-            progress_callback(max(0, min(100, scaled)), f"{prefix}：{text}")
-
-        return emit
 
     def _run_home_full_chain(self, df: pd.DataFrame, pipeline_id: str, progress_callback=None, should_cancel=None, stream_callback=None):
         output_base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".model_runs")
@@ -1702,40 +1696,49 @@ class MainWindow(QMainWindow):
 
             beat_state["count"] += 1
             beat_progress = min(82, 10 + beat_state["count"])
-            if progress_callback is not None:
-                progress_callback(beat_progress, "beat {}: sorting -> recognition -> mode/function attribute analysis".format(beat_state["count"]))
+
+            def mode_attr_progress(value, text):
+                if progress_callback is not None:
+                    progress_callback(value, text)
+
+            mode_attr_progress(beat_progress, f"beat {beat_state['count']}，工作模式/功能属性分析中")
             try:
                 live_output = run_radar_attribute_pipeline(completed, output_base_dir, block_duration=5, display_interval=30, progress_callback=None, should_cancel=should_cancel, stream_callback=None)
                 live_output.status = "running"
                 last_radar_output = live_output
                 if stream_callback is not None:
                     stream_callback(live_output)
+                mode_attr_progress(beat_progress, f"beat {beat_state['count']}，工作模式/功能属性分析完成")
             except Exception as exc:
-                if progress_callback is not None:
-                    progress_callback(beat_progress, "beat {}: waiting for valid recognition labels ({})".format(beat_state["count"], exc))
+                mode_attr_progress(beat_progress, f"beat {beat_state['count']}，工作模式/功能属性分析失败 ({exc})")
 
         pipeline_output = run_pipeline(
             df,
             pipeline_id,
-            progress_callback=self._scale_home_progress(progress_callback, 0, 82, "200ms beat sorting and recognition"),
+            progress_callback=progress_callback,
             should_cancel=should_cancel,
             stream_callback=run_mode_attr_for_completed_beat,
+            streaming_zeng_done=True,
         )
         if should_cancel and should_cancel():
             raise RuntimeError("Task cancelled")
-        final_data = pipeline_output.recognition.data
-        if progress_callback is not None:
-            progress_callback(84, "final mode/function attribute analysis")
-        final_radar_output = run_radar_attribute_pipeline(
-            final_data,
-            output_base_dir,
-            block_duration=5,
-            display_interval=30,
-            progress_callback=self._scale_home_progress(progress_callback, 84, 100, "mode/function attribute analysis"),
-            should_cancel=should_cancel,
-            stream_callback=stream_callback,
-        )
-        last_radar_output = final_radar_output
+        if last_radar_output is not None:
+            last_radar_output.status = "ok"
+            if progress_callback is not None:
+                progress_callback(90, "复用流式模式属性分析结果")
+        else:
+            final_data = pipeline_output.recognition.data
+            if progress_callback is not None:
+                progress_callback(84, "最终工作模式/功能属性分析中")
+            last_radar_output = run_radar_attribute_pipeline(
+                final_data,
+                output_base_dir,
+                block_duration=5,
+                display_interval=30,
+                progress_callback=progress_callback,
+                should_cancel=should_cancel,
+                stream_callback=stream_callback,
+            )
 
         return pipeline_output, last_radar_output
 
@@ -1830,12 +1833,12 @@ class MainWindow(QMainWindow):
             return True
         path = zeng_template_library_path()
         message = (
-            "zeng 识别需要模板库。\n\n"
-            "请先在“信号识别”页点击“生成zeng模板库”，"
+            "信号识别需要模板库。\n\n"
+            "请先在“信号识别”页点击“生成模板库”，"
             f"生成后再运行。\n\n缺少文件：{path}"
         )
         QMessageBox.information(self, "需要生成模板库", message)
-        self.log(f"运行已暂停：zeng 模板库未生成，缺少 {path}")
+        self.log(f"运行已暂停：信号识别模板库未生成，缺少 {path}")
         self.tabs.setCurrentWidget(self.recognition_page)
         return False
 
@@ -1982,9 +1985,9 @@ class MainWindow(QMainWindow):
         self._refresh_pages()
         if radar_output is not None:
             self._refresh_export_dashboard(radar_output)
-        self._finish_status("主页全链路分析", elapsed)
+        self._finish_status("全流程分析", elapsed)
         self.log(
-            f"主页全链路完成：200ms beat级 HDBSCAN → cycle_period → MHT → zeng识别 → 工作模式/功能属性分析，"
+            f"全流程分析：预分选 → 主分选 → 细分选 → 信号识别 → 工作模式/功能属性分析，"
             f"轨迹数 {pipeline_output.sorting.track_count}，"
             f"耗时 {format_elapsed(elapsed)}"
         )
@@ -2023,7 +2026,7 @@ class MainWindow(QMainWindow):
         self._finish_status(output.pipeline_name, elapsed)
         stages = "、".join(stage.definition.name for stage in output.stage_results)
         self.log(
-            f"两阶段分选完成：{stages}，"
+            f"三阶段分选完成：{stages}，"
             f"最终方法 {output.sorting.method}，轨迹数：{output.sorting.track_count}，"
             f"耗时：{format_elapsed(elapsed)}"
         )

@@ -228,7 +228,7 @@ def run_radar_attribute_pipeline(
     if should_cancel and should_cancel():
         raise RuntimeError("Radar attribute pipeline cancelled")
     if progress_callback:
-        progress_callback(10, "prepare external recognition input")
+        progress_callback(10, "准备工作模式/功能属性识别输入")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     base_dir = Path(output_base_dir)
@@ -239,7 +239,7 @@ def run_radar_attribute_pipeline(
     if should_cancel and should_cancel():
         raise RuntimeError("Radar attribute pipeline cancelled")
     if progress_callback:
-        progress_callback(30, "run radar attribute pipeline")
+        progress_callback(30, "运行工作模式/功能属性流水线")
 
     def emit_partial(payload: dict):
         if stream_callback is None:
@@ -279,13 +279,13 @@ def run_radar_attribute_pipeline(
         raise RuntimeError(result.get("error") or "Radar attribute pipeline failed")
 
     if progress_callback:
-        progress_callback(82, "read recognition output summary")
+        progress_callback(82, "读取识别输出摘要")
     run_dir = Path(result.get("run_dir") or "")
     segments = _read_segments(run_dir)
     summary = _read_json(run_dir / "global_summary.json")
     display_frames = _read_json(run_dir / "display_frames" / "index.json")
     if progress_callback:
-        progress_callback(96, "build radar attribute dashboard")
+        progress_callback(96, "构建雷达属性仪表板")
     return RadarAttributeDashboard(
         status="ok",
         run_dir=str(run_dir),
