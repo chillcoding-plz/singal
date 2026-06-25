@@ -272,8 +272,7 @@ class AnalysisPage(QWidget):
         self.stage_combo.clear()
         if self.stage_results:
             for index, stage in enumerate(self.stage_results, start=1):
-                suffix = "（最终）" if index == len(self.stage_results) else ""
-                self.stage_combo.addItem(f"{index}. {stage.definition.name}{suffix}")
+                self.stage_combo.addItem(f"{index}. {self._stage_display_name(stage.definition.name)}")
             self.stage_combo.setCurrentIndex(max(0, len(self.stage_results) - 1))
         else:
             self.stage_combo.addItem("暂无阶段结果")
@@ -282,6 +281,13 @@ class AnalysisPage(QWidget):
             self.stage_bar.setVisible(True)
         if self.stage_results:
             self._apply_stage_selection()
+
+    def _stage_display_name(self, name: str) -> str:
+        return {
+            "HDBSCAN": "预分选",
+            "HDBSCAN+cycle_period": "主分选",
+            "MHT": "细分选",
+        }.get(name, name)
 
     def clear_stage_results(self):
         self.stage_results = []
@@ -499,6 +505,10 @@ class MainWindow(QMainWindow):
         self.task_progress_timer = QTimer(self)
         self.task_progress_timer.timeout.connect(self._advance_task_progress)
         self.task_progress_cap = 90
+        self.task_elapsed_timer = QTimer(self)
+        self.task_elapsed_timer.setInterval(200)
+        self.task_elapsed_timer.timeout.connect(self._update_task_elapsed)
+        self.task_start_time = None
         self._task_stopped = False
 
     def _title_bar(self):
@@ -527,29 +537,12 @@ class MainWindow(QMainWindow):
         self.export_method_panel = MethodPanel()
         self.export_method_panel.setVisible(False)
 
-        meta = QFrame()
-        meta.setProperty("class", "card")
-        meta_layout = QHBoxLayout(meta)
-        meta_layout.setContentsMargins(12, 7, 12, 7)
-        meta_layout.setSpacing(18)
         self.export_task_label = QLabel("任务名称：未生成")
         self.export_radar_label = QLabel("选中雷达：-")
         self.export_block_label = QLabel("块时长：5.0 s")
         self.export_interval_label = QLabel("显示间隔：30.0 s")
         self.export_change_label = QLabel("变化点方法：auto")
         self.export_run_state_label = QLabel("运行状态：待生成")
-        for label in [
-            self.export_task_label,
-            self.export_radar_label,
-            self.export_block_label,
-            self.export_interval_label,
-            self.export_change_label,
-            self.export_run_state_label,
-        ]:
-            label.setProperty("class", "subtle")
-            meta_layout.addWidget(label)
-        meta_layout.addStretch(1)
-        layout.addWidget(meta)
 
         grid = QGridLayout()
         grid.setSpacing(7)
@@ -557,22 +550,29 @@ class MainWindow(QMainWindow):
 
         self.export_mode_chart = PgChartCard("工作模式时间线与置信度分数（200 ms 窗口级）", compact=True)
         self.export_attr_chart = PgChartCard("功能属性时间线与准确率分数（200 ms 窗口级）", compact=True)
-        self.export_mode_chart.setMinimumHeight(210)
-        self.export_attr_chart.setMinimumHeight(210)
+        self.export_mode_chart.setMinimumHeight(315)
+        self.export_attr_chart.setMinimumHeight(315)
         grid.addWidget(self.export_mode_chart, 0, 0)
         grid.addWidget(self.export_attr_chart, 0, 1)
 
+        right_column = QWidget()
+        right_layout = QVBoxLayout(right_column)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(7)
+
         score_card = QFrame()
         score_card.setProperty("class", "card")
+        score_card.setFixedHeight(140)
         score_layout = QVBoxLayout(score_card)
-        score_layout.setContentsMargins(12, 10, 12, 10)
+        score_layout.setContentsMargins(12, 6, 12, 6)
+        score_layout.setSpacing(2)
         score_title = QLabel("识别准确率")
         score_title.setProperty("class", "sectionTitle")
         score_layout.addWidget(score_title)
         self.mode_accuracy_value, self.mode_accuracy_bar = self._build_accuracy_metric(score_layout, "工作模式识别准确率")
         self.attr_accuracy_value, self.attr_accuracy_bar = self._build_accuracy_metric(score_layout, "功能属性识别准确率")
         score_layout.addStretch(1)
-        grid.addWidget(score_card, 0, 2)
+        right_layout.addWidget(score_card)
 
         table_card = QFrame()
         table_card.setProperty("class", "card")
@@ -600,35 +600,79 @@ class MainWindow(QMainWindow):
         summary_card = QFrame()
         summary_card.setProperty("class", "card")
         summary_layout = QVBoxLayout(summary_card)
-        summary_layout.setContentsMargins(12, 10, 12, 10)
+        summary_layout.setContentsMargins(12, 8, 12, 8)
+        summary_layout.setSpacing(4)
         summary_title = QLabel("输出摘要 / 分析摘要")
         summary_title.setProperty("class", "sectionTitle")
         summary_layout.addWidget(summary_title)
-        self.export_summary_text = QTextEdit()
-        self.export_summary_text.setReadOnly(True)
-        self.export_summary_text.setMinimumWidth(250)
-        summary_layout.addWidget(self.export_summary_text, 1)
-        grid.addWidget(summary_card, 1, 2)
+        self.export_summary_values = {}
+        for key in [
+            "总脉冲数",
+            "总窗口数",
+            "有效窗口",
+            "空窗口",
+            "状态段数",
+            "块数",
+            "主导模式",
+            "主导属性",
+            "unknown 比例",
+            "平均准确率",
+            "输出目录",
+        ]:
+            summary_layout.addWidget(self._export_summary_row(key, "-"))
+        summary_layout.addStretch(1)
+        right_layout.addWidget(summary_card, 1)
+        grid.addWidget(right_column, 0, 2, 2, 1)
 
         grid.setColumnStretch(0, 3)
         grid.setColumnStretch(1, 3)
         grid.setColumnStretch(2, 2)
-        grid.setRowStretch(0, 2)
-        grid.setRowStretch(1, 2)
+        grid.setRowStretch(0, 3)
+        grid.setRowStretch(1, 3)
 
         self._refresh_export_dashboard(None)
         return page
+
+    def _export_summary_row(self, left: str, right: str):
+        row = QWidget()
+        label = QLabel(left)
+        value = QLabel(str(right))
+        value.setWordWrap(True)
+        value.setStyleSheet("font-weight: 700; color: #0052B5;")
+        self.export_summary_values[left] = value
+
+        if left == "输出目录":
+            layout = QVBoxLayout(row)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(2)
+            value.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+            layout.addWidget(label)
+            layout.addWidget(value)
+            return row
+
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        layout.addWidget(label, 1)
+        layout.addWidget(value, 2)
+        return row
+
+    def _update_export_summary(self, values: Dict[str, object]):
+        for key, label in self.export_summary_values.items():
+            label.setText(str(values.get(key, "-")))
 
     def _build_accuracy_metric(self, layout: QVBoxLayout, title: str):
         label = QLabel(title)
         label.setProperty("class", "subtle")
         value = QLabel("--")
         value.setAlignment(Qt.AlignCenter)
-        value.setStyleSheet("font-size: 28px; font-weight: 700; color: #0052b5;")
+        value.setStyleSheet("font-size: 20px; font-weight: 700; color: #0052b5;")
         bar = QProgressBar()
         bar.setRange(0, 100)
         bar.setValue(0)
         bar.setFormat("0.0%")
+        bar.setFixedHeight(14)
         layout.addWidget(label)
         layout.addWidget(value)
         layout.addWidget(bar)
@@ -659,6 +703,26 @@ class MainWindow(QMainWindow):
         bar.setFormat(f"{score * 100:.1f}%")
 
     def _label_color(self, label: str, index: int) -> tuple:
+        fixed = {
+            "搜索": (43, 160, 72),
+            "跟踪": (30, 136, 229),
+            "制导": (251, 140, 0),
+            "成像": (103, 58, 183),
+            "疑似搜索": (0, 150, 136),
+            "疑似跟踪": (245, 158, 11),
+            "疑似制导": (216, 67, 21),
+            "疑似成像": (84, 110, 122),
+            "未知": (117, 117, 117),
+            "警戒": (30, 136, 229),
+            "对海搜索": (251, 140, 0),
+            "对空搜索": (43, 160, 72),
+            "导航": (0, 150, 136),
+            "火控": (216, 67, 21),
+            "侦察": (103, 58, 183),
+            "数据不足": (103, 58, 183),
+        }
+        if label in fixed:
+            return fixed[label]
         palette = [
             (30, 136, 229),
             (43, 160, 72),
@@ -671,12 +735,18 @@ class MainWindow(QMainWindow):
         ]
         return palette[index % len(palette)]
 
+    def _timeline_labels(self, label_column: str) -> list[str]:
+        if label_column == "mode":
+            return ["搜索", "跟踪", "制导", "成像", "疑似搜索", "疑似跟踪", "疑似制导", "疑似成像", "未知"]
+        if label_column == "attribute":
+            return ["警戒", "对海搜索", "对空搜索", "导航", "火控", "侦察", "未知", "数据不足"]
+        return []
+
     def _plot_export_timeline(self, card: PgChartCard, segments: pd.DataFrame, label_column: str, score_column: str):
         card.clear()
         plot = card._plot_item
         plot.setLabel("bottom", "时间 (s)")
-        plot.setLabel("left", "分数")
-        plot.setYRange(-0.05, 1.28)
+        plot.setLabel("left", "")
         plot.showGrid(x=True, y=True, alpha=0.25)
         if segments is None or segments.empty or label_column not in segments.columns:
             card.show_empty()
@@ -691,12 +761,6 @@ class MainWindow(QMainWindow):
             view["end_time"] = pd.to_numeric(view["end_time"], errors="coerce")
         else:
             view["end_time"] = view["start_time"] + 0.2
-        if score_column in view.columns:
-            view["_score"] = pd.to_numeric(view[score_column], errors="coerce")
-        elif "accuracy" in view.columns:
-            view["_score"] = pd.to_numeric(view["accuracy"], errors="coerce")
-        else:
-            view["_score"] = 0.0
         view["_label"] = view[label_column].fillna("未知").astype(str).str.strip().replace("", "未知")
         view = view.dropna(subset=["start_time", "end_time"])
         if view.empty:
@@ -710,29 +774,27 @@ class MainWindow(QMainWindow):
         for (_, _), group in view.groupby(["_start_key", "_end_key"], sort=True):
             labels = group["_label"].replace("", "未知")
             label = labels.value_counts().index[0] if not labels.empty else "未知"
-            score_values = pd.to_numeric(group["_score"], errors="coerce").dropna()
             rows.append({
                 "start_time": float(group["start_time"].min()),
                 "end_time": float(group["end_time"].max()),
                 "label": str(label),
-                "score": float(score_values.mean()) if not score_values.empty else 0.0,
             })
         window_view = pd.DataFrame(rows).sort_values("start_time").reset_index(drop=True)
         if window_view.empty:
             card.show_empty()
             return
 
-        max_points = 240
-        if len(window_view) > max_points:
-            step = max(1, int(len(window_view) / max_points))
-            window_view = window_view.iloc[::step].tail(max_points).reset_index(drop=True)
-
-        label_order = []
+        label_order = self._timeline_labels(label_column)
         for label in window_view["label"]:
             if label not in label_order:
                 label_order.append(label)
         color_map = {label: self._label_color(label, i) for i, label in enumerate(label_order)}
-        legend = plot.addLegend(offset=(-8, 8))
+        fixed_labels = self._timeline_labels(label_column)
+        legend_labels = fixed_labels or label_order
+        card.set_bottom_legend([(label, color_map[label]) for label in legend_labels])
+        y_map = {label: index for index, label in enumerate(label_order)}
+        plot.getAxis("left").setTicks([[(value, label) for label, value in y_map.items()]])
+        plot.setYRange(-0.6, max(0, len(label_order) - 1) + 0.6)
 
         bands = []
         for _, row in window_view.iterrows():
@@ -744,22 +806,25 @@ class MainWindow(QMainWindow):
             else:
                 bands.append({"label": label, "start_time": start_time, "end_time": end_time})
 
-        used = set()
         for band in bands:
             label = band["label"]
-            name = label if label not in used and len(used) < 8 else None
-            used.add(label)
-            plot.plot([band["start_time"], band["end_time"]], [1.16, 1.16], pen=pg.mkPen(color=color_map[label], width=10), name=name)
+            y = y_map.get(label)
+            if y is None:
+                continue
+            plot.plot([band["start_time"], band["end_time"]], [y, y], pen=pg.mkPen(color=color_map[label], width=8))
 
-        xs = ((window_view["start_time"] + window_view["end_time"]) / 2.0).astype(float).tolist()
-        ys = window_view["score"].clip(0.0, 1.0).astype(float).tolist()
-        if xs:
-            plot.plot(xs, ys, pen=pg.mkPen(color=(30, 136, 229), width=2.0), symbol="o", symbolSize=5)
-            x0 = float(window_view["start_time"].min())
-            x1 = float(window_view["end_time"].max())
+        for previous, current in zip(bands, bands[1:]):
+            previous_y = y_map.get(previous["label"])
+            current_y = y_map.get(current["label"])
+            if previous_y is None or current_y is None or previous_y == current_y:
+                continue
+            x = current["start_time"]
+            plot.plot([x, x], [previous_y, current_y], pen=pg.mkPen(color=(100, 116, 139), width=1.2))
+
+        if bands:
+            x0 = float(min(band["start_time"] for band in bands))
+            x1 = float(max(band["end_time"] for band in bands))
             plot.setXRange(x0, x1 if x1 > x0 else x0 + 1.0, padding=0.03)
-        if legend is not None:
-            legend.setLabelTextSize("8pt")
         card._initialized = True
 
     def _refresh_export_dashboard(self, output: Optional[RadarAttributeDashboard]):
@@ -769,7 +834,7 @@ class MainWindow(QMainWindow):
             self._set_metric(self.mode_accuracy_value, self.mode_accuracy_bar, 0.0)
             self._set_metric(self.attr_accuracy_value, self.attr_accuracy_bar, 0.0)
             self.export_segment_table.setRowCount(0)
-            self.export_summary_text.setPlainText("尚未生成工作模式/功能属性识别结果。")
+            self._update_export_summary({"输出目录": "尚未生成工作模式/功能属性识别结果。"})
             self.export_run_state_label.setText("运行状态：待生成")
             return
 
@@ -833,22 +898,21 @@ class MainWindow(QMainWindow):
         dominant_attr = str(dominant_attrs.mode().iloc[0]) if not dominant_attrs.empty else "-"
         unknown_values = [float(v.get("unknown_ratio", 0.0) or 0.0) for v in radars.values()]
         unknown_ratio = sum(unknown_values) / len(unknown_values) if unknown_values else 0.0
-        summary_lines = [
-            f"总脉冲数        {total_pulses:,}",
-            f"总窗口数        {total_windows:,}",
-            f"有效窗口        {valid_windows:,}",
-            f"空窗口          {empty_windows:,}",
-            f"状态段数        {len(segments):,}",
-            f"块数            {total_blocks:,}",
-            "",
-            f"主导模式        {dominant_mode}",
-            f"主导属性        {dominant_attr}",
-            f"unknown 比例    {unknown_ratio * 100:.1f}%",
-            f"平均准确率      {((mode_score + attr_score) / 2.0):.2f}",
-            "",
-            f"输出目录        {output.run_dir}",
-        ]
-        self.export_summary_text.setPlainText("\n".join(summary_lines))
+        self._update_export_summary(
+            {
+                "总脉冲数": f"{total_pulses:,}",
+                "总窗口数": f"{total_windows:,}",
+                "有效窗口": f"{valid_windows:,}",
+                "空窗口": f"{empty_windows:,}",
+                "状态段数": f"{len(segments):,}",
+                "块数": f"{total_blocks:,}",
+                "主导模式": dominant_mode,
+                "主导属性": dominant_attr,
+                "unknown 比例": f"{unknown_ratio * 100:.1f}%",
+                "平均准确率": f"{((mode_score + attr_score) / 2.0):.2f}",
+                "输出目录": output.run_dir,
+            }
+        )
 
     def start_radar_dashboard_analysis(self):
         if not self._ensure_data():
@@ -1857,9 +1921,12 @@ class MainWindow(QMainWindow):
         self.stream_recognition_enabled = bool(stream_recognition)
         self._task_stopped = False  # 重置停止标志
         self._set_all_running(True)
+        self.task_start_time = time.perf_counter()
         self.progress.setValue(5)
         self.step_label.setText("当前操作：任务启动")
+        self.elapsed_label.setText("本次耗时：00:00:00.000")
         self.task_progress_cap = 90
+        self.task_elapsed_timer.start()
         if animate_progress:
             self.task_progress_timer.start(650)
         else:
@@ -1972,6 +2039,11 @@ class MainWindow(QMainWindow):
         elif value < self.task_progress_cap:
             self.progress.setValue(value + 1)
 
+    def _update_task_elapsed(self):
+        if self.task_start_time is None:
+            return
+        self.elapsed_label.setText(f"本次耗时：{format_elapsed(time.perf_counter() - self.task_start_time)}")
+
     def _on_home_full_chain_done(self, output, elapsed: float):
         self._clear_partial_sorting_update()
         pipeline_output, radar_output = output
@@ -2054,6 +2126,9 @@ class MainWindow(QMainWindow):
     def _on_worker_failed(self, message: str):
         self._clear_partial_sorting_update()
         self.task_progress_timer.stop()
+        self.task_elapsed_timer.stop()
+        self._update_task_elapsed()
+        self.task_start_time = None
         # 如果是因为用户主动停止，不显示错误对话框
         is_user_cancel = "取消" in message or "停止" in message or "cancelled" in message.lower()
         if is_user_cancel:
@@ -2071,6 +2146,7 @@ class MainWindow(QMainWindow):
         # 设置停止标志，防止信号回调继续更新 UI
         self._task_stopped = True
         self.task_progress_timer.stop()
+        self.task_elapsed_timer.stop()
         # 断开旧 worker 的所有信号，防止残留信号干扰 UI
         if self.worker is not None:
             try:
@@ -2088,7 +2164,8 @@ class MainWindow(QMainWindow):
         # 重置进度条和状态
         self.progress.setValue(0)
         self.step_label.setText("当前操作：已停止")
-        self.elapsed_label.setText("本次耗时：00:00:00.000")
+        self._update_task_elapsed()
+        self.task_start_time = None
         # 设置 UI 状态
         self._set_all_running(False)
         self.log("任务已停止")
@@ -2321,6 +2398,10 @@ class MainWindow(QMainWindow):
 
     def _finish_status(self, operation: str, elapsed: float):
         self.task_progress_timer.stop()
+        self.task_elapsed_timer.stop()
+        if self.task_start_time is not None:
+            elapsed = time.perf_counter() - self.task_start_time
+            self.task_start_time = None
         self.progress.setValue(100)
         self.step_label.setText(f"当前操作：{operation}完成")
         self.elapsed_label.setText(f"本次耗时：{format_elapsed(elapsed)}")

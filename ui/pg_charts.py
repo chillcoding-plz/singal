@@ -8,7 +8,7 @@ import pandas as pd
 import pyqtgraph as pg
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import QDialog, QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout
+from PyQt5.QtWidgets import QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from .widgets import TRACK_COLORS, track_color
 
@@ -113,14 +113,62 @@ class PgChartCard(QFrame):
         header_layout.addStretch(1)
         layout.addWidget(header)
         layout.addWidget(self._plot_widget, 1)
+        self._bottom_legend = QWidget()
+        self._bottom_legend.setFixedHeight(44)
+        self._bottom_legend_layout = QGridLayout(self._bottom_legend)
+        self._bottom_legend_layout.setContentsMargins(8, 2, 8, 4)
+        self._bottom_legend_layout.setHorizontalSpacing(12)
+        self._bottom_legend_layout.setVerticalSpacing(2)
+        self._bottom_legend.setVisible(False)
+        layout.addWidget(self._bottom_legend)
 
         self._plot_widget.scene().sigMouseClicked.connect(self._on_double_click)
 
     def clear(self):
         self._plot_item.clear()
+        self.set_bottom_legend([])
         self._initialized = False
         self._render_key = None
         self._render_items = {}
+
+    def set_inline_legend(self, items):
+        self.set_bottom_legend(items)
+
+    def set_bottom_legend(self, items):
+        while self._bottom_legend_layout.count():
+            item = self._bottom_legend_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        for index, (label, color) in enumerate(items):
+            row = index % 2
+            column = index // 2
+            self._bottom_legend_layout.addWidget(self._legend_item(str(label), color), row, column)
+        for column in range(max(1, (len(items) + 1) // 2)):
+            self._bottom_legend_layout.setColumnStretch(column, 0)
+        self._bottom_legend_layout.setColumnStretch(max(1, (len(items) + 1) // 2), 1)
+        self._bottom_legend.setVisible(bool(items))
+
+    def _legend_item(self, label: str, color):
+        item = QWidget()
+        layout = QHBoxLayout(item)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        dot = QLabel()
+        dot.setFixedSize(10, 10)
+        dot.setStyleSheet(f"background: {self._legend_color(color)}; border-radius: 5px;")
+        text = QLabel(label)
+        text.setProperty("class", "subtle")
+        text.setFont(_CN_FONT_SMALL)
+        layout.addWidget(dot)
+        layout.addWidget(text)
+        return item
+
+    def _legend_color(self, color):
+        if isinstance(color, tuple):
+            r, g, b = color[:3]
+            return f"rgb({int(r)}, {int(g)}, {int(b)})"
+        return str(color)
 
     def show_empty(self):
         self.clear()
