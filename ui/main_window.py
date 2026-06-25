@@ -499,6 +499,7 @@ class MainWindow(QMainWindow):
         self.task_progress_timer = QTimer(self)
         self.task_progress_timer.timeout.connect(self._advance_task_progress)
         self.task_progress_cap = 90
+        self._task_stopped = False
 
     def _title_bar(self):
         frame = QFrame()
@@ -1851,6 +1852,7 @@ class MainWindow(QMainWindow):
     ):
         self._clear_partial_sorting_update()
         self.stream_recognition_enabled = bool(stream_recognition)
+        self._task_stopped = False  # 重置停止标志
         self._set_all_running(True)
         self.progress.setValue(5)
         self.step_label.setText("当前操作：任务启动")
@@ -1870,18 +1872,32 @@ class MainWindow(QMainWindow):
         self.worker.failed.connect(self._on_worker_failed)
         self.worker.finished.connect(self.worker_thread.quit)
         self.worker.failed.connect(self.worker_thread.quit)
-        self.worker_thread.finished.connect(lambda: self._set_all_running(False))
-        self.worker_thread.finished.connect(self.worker.deleteLater)
-        self.worker_thread.finished.connect(self.worker_thread.deleteLater)
+        self.worker_thread.finished.connect(self._on_worker_thread_finished)
         self.worker_thread.start()
 
     def _on_worker_progress(self, value: int, text: str):
+        if self._task_stopped:
+            return
         if value >= 100:
             self.task_progress_timer.stop()
         self.progress.setValue(max(self.progress.value(), value))
         self.step_label.setText(f"当前操作：{text}")
 
+    def _on_worker_thread_finished(self):
+        # 清理 worker 和 worker_thread 引用
+        if self.worker is not None:
+            self.worker.deleteLater()
+            self.worker = None
+        if self.worker_thread is not None:
+            self.worker_thread.deleteLater()
+            self.worker_thread = None
+        # 只有在任务未主动停止时才更新状态
+        if not self._task_stopped:
+            self._set_all_running(False)
+
     def _on_worker_partial_sorting(self, data):
+        if self._task_stopped:
+            return
         if isinstance(data, RadarAttributeDashboard):
             self.radar_dashboard_output = data
             self._refresh_export_dashboard(data)
@@ -1925,7 +1941,10 @@ class MainWindow(QMainWindow):
                         "类别数": int(track_results["Predicted_Label"].nunique()),
                     }
                 )
+            # 同步更新所有页面的识别摘要
             self.recognition_page.method_panel.update_summary(recognition_summary)
+            self.home_page.method_panel.update_summary(recognition_summary)
+            self.sort_page.method_panel.update_summary(recognition_summary)
         else:
             self.sort_page.set_data(data)
             self.sort_page.method_panel.update_summary(self._summary_for_dataframe(data))
@@ -1939,6 +1958,9 @@ class MainWindow(QMainWindow):
         self.last_recognition_table_update = 0.0
 
     def _advance_task_progress(self):
+        # 如果任务已停止，不再更新进度条
+        if self._task_stopped:
+            return
         value = self.progress.value()
         if value < 15:
             self.progress.setValue(value + 1)
@@ -2029,20 +2051,44 @@ class MainWindow(QMainWindow):
     def _on_worker_failed(self, message: str):
         self._clear_partial_sorting_update()
         self.task_progress_timer.stop()
-        self.progress.setValue(0)
-        self.step_label.setText("当前操作：任务失败")
-        self.log(f"任务失败：{message}")
-        QMessageBox.warning(self, "任务失败", message)
+        # 如果是因为用户主动停止，不显示错误对话框
+        is_user_cancel = "取消" in message or "停止" in message or "cancelled" in message.lower()
+        if is_user_cancel:
+            self.progress.setValue(0)
+            self.step_label.setText("当前操作：已停止")
+            self.log(f"任务已停止：{message}")
+        else:
+            self.progress.setValue(0)
+            self.step_label.setText("当前操作：任务失败")
+            self.log(f"任务失败：{message}")
+            QMessageBox.warning(self, "任务失败", message)
 
     def stop_current_task(self):
         self._clear_partial_sorting_update()
-        if self.worker is not None:
-            self.worker.cancel()
+        # 设置停止标志，防止信号回调继续更新 UI
+        self._task_stopped = True
         self.task_progress_timer.stop()
+        # 断开旧 worker 的所有信号，防止残留信号干扰 UI
+        if self.worker is not None:
+            try:
+                self.worker.progress.disconnect(self._on_worker_progress)
+            except TypeError:
+                pass
+            try:
+                self.worker.partial.disconnect(self._on_worker_partial_sorting)
+            except TypeError:
+                pass
+            self.worker.cancel()
+        # 请求线程退出（非阻塞）
+        if self.worker_thread is not None and self.worker_thread.isRunning():
+            self.worker_thread.quit()
+        # 重置进度条和状态
         self.progress.setValue(0)
         self.step_label.setText("当前操作：已停止")
         self.elapsed_label.setText("本次耗时：00:00:00.000")
-        self.log("任务停止请求已发送")
+        # 设置 UI 状态
+        self._set_all_running(False)
+        self.log("任务已停止")
 
     def _refresh_pages(self):
         self.home_page.set_data(self.data)
@@ -2079,8 +2125,9 @@ class MainWindow(QMainWindow):
             )
             if recognition_accuracy is not None:
                 recognition_summary["识别准确率"] = f"{float(recognition_accuracy) * 100:.1f}%"
-        self.home_page.method_panel.update_summary(final_summary)
-        self.sort_page.method_panel.update_summary(sort_summary)
+        # 同步更新所有页面的摘要：主页和分选页也需要显示识别摘要
+        self.home_page.method_panel.update_summary(recognition_summary)
+        self.sort_page.method_panel.update_summary(recognition_summary)
         self.recognition_page.method_panel.update_summary(recognition_summary)
         self.export_method_panel.update_summary(recognition_summary)
 
