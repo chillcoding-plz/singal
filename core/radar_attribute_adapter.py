@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -84,13 +85,12 @@ def _track_labels(df: pd.DataFrame) -> pd.Series:
     return labels
 
 def prepare_radar_pipeline_input(df: pd.DataFrame, directory: str | os.PathLike[str]) -> str:
-    """Write the current sorted PDW table into the external radar pipeline format."""
+    """Write current PDW data as the external pipeline's 200 ms beat zip package."""
     if df is None or df.empty:
         raise ValueError("输入数据为空，无法准备雷达管线输入文件")
 
     output_dir = Path(directory)
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / "sample1_template_match_pdw_with_pred_label.txt"
 
     adapted = pd.DataFrame(
         {
@@ -106,7 +106,17 @@ def prepare_radar_pipeline_input(df: pd.DataFrame, directory: str | os.PathLike[
     adapted = adapted[adapted["PRED_LABEL"] > 0].sort_values(["PRED_LABEL", "TOA(s)"])
     if adapted.empty:
         raise ValueError("预处理后无有效数据，请检查 PDW 表中是否包含有效的脉冲和 PRED_LABEL")
-    adapted.to_csv(path, sep=" ", index=False)
+    path = output_dir / "sample1_template_match_pdw_with_pred_label.zip"
+    beat_ids = (adapted["TOA(s)"] // 0.2).astype(int)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for beat_id in sorted(beat_ids.unique()):
+            beat = adapted.loc[beat_ids == beat_id].sort_values(["TOA(s)", "PRED_LABEL"])
+            if beat.empty:
+                continue
+            archive.writestr(
+                f"beat_{int(beat_id):06d}.txt",
+                beat.to_csv(sep=" ", index=False, float_format="%.9f"),
+            )
     return str(path)
 
 
@@ -290,4 +300,3 @@ def run_radar_attribute_pipeline(
         segments=segments,
         report_path=str(run_dir / "report.md"),
     )
-

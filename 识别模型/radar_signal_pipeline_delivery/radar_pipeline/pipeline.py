@@ -92,8 +92,9 @@ def run_pipeline(
 
     # ── 加载数据 ──
     print("\n  [1/10] 加载数据...")
-    if pre_segmented:
-        print("    模式: 200ms 预分段文件 (每文件一个窗口)")
+    has_zip_input = any(str(path).lower().endswith(".zip") for path in input_files)
+    if pre_segmented or has_zip_input:
+        print("    模式: 200ms 预分段输入 (支持 beat 文件或 zip 节拍包)")
         all_radars = load_presegmented_files(input_files, min_pulses=100)
     else:
         all_radars = load_and_window(input_files, min_pulses=100)

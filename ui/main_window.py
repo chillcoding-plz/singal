@@ -436,7 +436,7 @@ class MainWindow(QMainWindow):
                 ("轨迹脉冲统计柱状图", plot_track_bars),
                 ("已分配 / 未分配统计", plot_quality),
             ],
-            show_tracks=True,
+            show_tracks=False,
             show_stage_selector=True,
             grid_columns=3,
             compact_charts=True,
@@ -448,7 +448,7 @@ class MainWindow(QMainWindow):
                 ("识别置信度散点图", plot_probability),
                 ("类别统计柱状图", plot_class_stats),
             ],
-            show_tracks=True,
+            show_tracks=False,
             table_card=TableCard("识别结果表格"),
         )
         self.sort_ribbon.template_btn.setText("导入HDBSCAN结果")
@@ -586,8 +586,8 @@ class MainWindow(QMainWindow):
         title_row.addStretch(1)
         title_row.addWidget(self.export_table_window_label)
         table_layout.addLayout(title_row)
-        self.export_segment_table = QTableWidget(0, 7)
-        self.export_segment_table.setHorizontalHeaderLabels(["序号", "时间范围(s)", "脉冲数", "工作模式", "准确率", "雷达源", "雷达ID"])
+        self.export_segment_table = QTableWidget(0, 8)
+        self.export_segment_table.setHorizontalHeaderLabels(["序号", "时间范围(s)", "脉冲数", "工作模式", "功能属性", "准确率", "雷达源", "雷达ID"])
         self.export_segment_table.setAlternatingRowColors(True)
         self.export_segment_table.verticalHeader().setVisible(False)
         self.export_segment_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -810,6 +810,7 @@ class MainWindow(QMainWindow):
                 f"{self._segment_float(row.get('start_time')):.3f} ~ {self._segment_float(row.get('end_time')):.3f}",
                 f"{int(self._segment_float(row.get('n_pulses'))):,}",
                 str(row.get("mode", "未知")),
+                str(row.get("attribute", "未知")),
                 f"{self._segment_float(row.get('accuracy')):.2f}",
                 radar_key,
                 radar_id,
@@ -1721,6 +1722,19 @@ class MainWindow(QMainWindow):
         )
         if should_cancel and should_cancel():
             raise RuntimeError("Task cancelled")
+        final_data = pipeline_output.recognition.data
+        if progress_callback is not None:
+            progress_callback(84, "final mode/function attribute analysis")
+        final_radar_output = run_radar_attribute_pipeline(
+            final_data,
+            output_base_dir,
+            block_duration=5,
+            display_interval=30,
+            progress_callback=self._scale_home_progress(progress_callback, 84, 100, "mode/function attribute analysis"),
+            should_cancel=should_cancel,
+            stream_callback=stream_callback,
+        )
+        last_radar_output = final_radar_output
 
         return pipeline_output, last_radar_output
 
