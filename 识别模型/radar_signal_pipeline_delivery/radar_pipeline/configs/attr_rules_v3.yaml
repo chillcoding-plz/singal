@@ -1,0 +1,61 @@
+# 功能属性规则 v3.0
+# 新管线专用配置
+#
+# 设计原则:
+#   - 纯信号路径权重 >= 0.85
+#   - 模式上下文权重 <= 0.15
+#   - 删除 doa_std/rf_mean 驻留指标 (物理量错误)
+#   - 5 个窗口必须按连续 window_id 聚合
+#   - 尾部不足 5 窗重新计算
+#   - 全局平局输出待定
+
+# 融合权重
+fusion_weights:
+  signal_weight: 0.85
+  mode_weight: 0.15
+
+# 拒绝条件
+reject_conditions:
+  min_pulses: 500
+  min_fusion_score: 0.35
+  ambiguity_gap: 0.08
+  ambiguity_min_second: 0.25
+
+# 属性定义
+attributes:
+  - 警戒
+  - 对海搜索
+  - 对空搜索
+  - 导航
+  - 火控
+  - 侦察
+
+# 信号特征阈值 (用于纯信号路径)
+signal_thresholds:
+  # 警戒
+  alert_doa_range_strong: 25
+  alert_doa_range_weak: 18
+  alert_scan_evidence: 0.4
+  alert_duty_cycle: 0.20
+
+  # 对海搜索
+  sea_search_scan_evidence: 0.4
+  sea_search_doa_range_max: 20
+
+  # 对空搜索
+  air_search_scan_evidence: 0.3
+  air_search_doa_range_min: 15
+  air_search_doa_range_max: 30
+
+  # 导航
+  nav_param_stability: 10
+  nav_doa_range: 10
+
+  # 火控
+  fc_pa_cv: 0.15
+  fc_density_hprf: 20000
+  fc_density_high: 50000
+
+  # 侦察
+  recon_pw_wide: 8
+  recon_pw_medium: 5

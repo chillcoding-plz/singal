@@ -1,0 +1,79 @@
+# 工作模式规则 v3.0
+# 新管线专用配置
+#
+# 设计原则:
+#   - beam_mode 降级为证据，不再决定规则树入口
+#   - 多证据并行评分，非首条命中
+#   - 三级输出: known / suspected / unknown
+#   - 删除默认已知分支
+
+# 判决阈值
+decision_thresholds:
+  known_min: 0.45          # 确定分类最低得分
+  known_margin: 0.08       # 确定分类最低差距
+  suspected_min: 0.25      # 疑似分类最低得分
+  evidence_min: 0.15       # 证据最低得分
+
+# PRF 分类阈值 (微秒)
+prf_thresholds:
+  hprf_max_pri: 10.0
+  mprf_max_pri: 200.0
+  lprf_max_pri: 500.0
+
+# PW 分类阈值 (微秒)
+pw_thresholds:
+  narrow_max: 1.5
+  wide_min: 5.0
+
+# RF 分类阈值
+rf_thresholds:
+  fixed_std_max: 15.0
+  hop_ratio_threshold: 0.01
+  hop_std_min: 50.0
+  agile_ratio_threshold: 0.005
+  agile_std_min: 10.0
+
+# PA 阈值
+pa_thresholds:
+  periodicity_strong: 0.15
+  periodicity_weak: 0.08
+  periodicity_min: 0.03
+  stability_cv_max: 0.15
+  dynamic_range_strong: 15.0
+  dynamic_range_weak: 8.0
+
+# DOA 阈值
+doa_thresholds:
+  valid_std_min: 0.1
+  gaze_range_max: 10.0
+  gaze_weak_cv: 0.20
+  gaze_weak_range: 15.0
+  scatter_min: 15.0
+
+# 转移代价 (时序解码)
+transition_costs:
+  搜索_跟踪: 0.5
+  搜索_制导: 2.0
+  搜索_成像: 1.5
+  搜索_未知: 0.3
+  跟踪_搜索: 1.0
+  跟踪_制导: 0.5
+  跟踪_成像: 1.5
+  跟踪_未知: 0.3
+  制导_搜索: 2.0
+  制导_跟踪: 1.0
+  制导_成像: 2.0
+  制导_未知: 0.3
+  成像_搜索: 1.5
+  成像_跟踪: 1.5
+  成像_制导: 2.0
+  成像_未知: 0.3
+  未知_搜索: 0.5
+  未知_跟踪: 0.5
+  未知_制导: 0.5
+  未知_成像: 0.5
+
+# 最小持续时间
+temporal_constraints:
+  min_duration_windows: 3
+  short_duration_penalty: 0.5

@@ -1,0 +1,206 @@
+# 自动生成的候选未知规则，不是正式规则。
+# status=candidate 表示需要后续确认后再吸收到正式规则库。
+
+candidate_制导型_00_HPRF-抖动_随机-medium-hopping-分时调度:
+  status: candidate
+  source: unknown_discovery
+  family: 制导型
+  count: 105
+  stability: 0.4659
+  signature_purity: 0.9238
+  dominant_signature: "HPRF-抖动/随机-medium-hopping-分时调度"
+  suggested_mode: 制导
+  suggested_attr: 搜索型
+  conditions:
+    pri_level: "HPRF"
+    pri_mode: "抖动/随机"
+    rf_mode: "hopping"
+    pw_type: "medium"
+    beam_mode: "分时调度"
+
+candidate_制导型_01_MPRF-抖动_随机-medium-fixed-分时调度:
+  status: candidate
+  source: unknown_discovery
+  family: 制导型
+  count: 35
+  stability: 0.477
+  signature_purity: 1.0
+  dominant_signature: "MPRF-抖动/随机-medium-fixed-分时调度"
+  suggested_mode: 制导
+  suggested_attr: 火控型
+  conditions:
+    pri_level: "MPRF"
+    pri_mode: "抖动/随机"
+    rf_mode: "fixed"
+    pw_type: "medium"
+    beam_mode: "分时调度"
+
+candidate_搜索型_100_MPRF-抖动_随机-medium-hopping-分时调度:
+  status: candidate
+  source: signature_fallback
+  family: 搜索型
+  count: 412
+  stability: 0.4687
+  signature_purity: 1.0
+  dominant_signature: "MPRF-抖动/随机-medium-hopping-分时调度"
+  suggested_mode: 搜索
+  suggested_attr: 搜索型
+  conditions:
+    pri_level: "MPRF"
+    pri_mode: "抖动/随机"
+    rf_mode: "hopping"
+    pw_type: "medium"
+    beam_mode: "分时调度"
+
+candidate_搜索型_101_HPRF-抖动_随机-narrow-hopping-扫描:
+  status: candidate
+  source: signature_fallback
+  family: 搜索型
+  count: 398
+  stability: 0.4651
+  signature_purity: 1.0
+  dominant_signature: "HPRF-抖动/随机-narrow-hopping-扫描"
+  suggested_mode: 搜索
+  suggested_attr: 搜索型
+  conditions:
+    pri_level: "HPRF"
+    pri_mode: "抖动/随机"
+    rf_mode: "hopping"
+    pw_type: "narrow"
+    beam_mode: "扫描"
+
+candidate_搜索型_102_MPRF-抖动_随机-medium-hopping-扫描:
+  status: candidate
+  source: signature_fallback
+  family: 搜索型
+  count: 141
+  stability: 0.4643
+  signature_purity: 1.0
+  dominant_signature: "MPRF-抖动/随机-medium-hopping-扫描"
+  suggested_mode: 搜索
+  suggested_attr: 搜索型
+  conditions:
+    pri_level: "MPRF"
+    pri_mode: "抖动/随机"
+    rf_mode: "hopping"
+    pw_type: "medium"
+    beam_mode: "扫描"
+
+candidate_搜索型_103_MPRF-抖动_随机-medium-fixed-扫描:
+  status: candidate
+  source: signature_fallback
+  family: 搜索型
+  count: 121
+  stability: 0.4456
+  signature_purity: 1.0
+  dominant_signature: "MPRF-抖动/随机-medium-fixed-扫描"
+  suggested_mode: 搜索
+  suggested_attr: 搜索型
+  conditions:
+    pri_level: "MPRF"
+    pri_mode: "抖动/随机"
+    rf_mode: "fixed"
+    pw_type: "medium"
+    beam_mode: "扫描"
+
+candidate_搜索型_104_MPRF-抖动_随机-narrow-hopping-扫描:
+  status: candidate
+  source: signature_fallback
+  family: 搜索型
+  count: 104
+  stability: 0.4501
+  signature_purity: 1.0
+  dominant_signature: "MPRF-抖动/随机-narrow-hopping-扫描"
+  suggested_mode: 搜索
+  suggested_attr: 搜索型
+  conditions:
+    pri_level: "MPRF"
+    pri_mode: "抖动/随机"
+    rf_mode: "hopping"
+    pw_type: "narrow"
+    beam_mode: "扫描"
+
+candidate_火控型_100_MPRF-抖动_随机-medium-fixed:
+  status: candidate
+  source: signature_fallback
+  family: 火控型
+  count: 72
+  stability: 0.4454
+  signature_purity: 1.0
+  dominant_signature: "MPRF-抖动/随机-medium-fixed"
+  suggested_mode: 搜索
+  suggested_attr: 搜索型
+  conditions:
+    pri_level: "MPRF"
+    pri_mode: "抖动/随机"
+    rf_mode: "fixed"
+    pw_type: "medium"
+    beam_mode: "不确定"
+
+candidate_搜索型_105_HPRF-抖动_随机-medium-hopping-扫描:
+  status: candidate
+  source: signature_fallback
+  family: 搜索型
+  count: 71
+  stability: 0.4601
+  signature_purity: 1.0
+  dominant_signature: "HPRF-抖动/随机-medium-hopping-扫描"
+  suggested_mode: 搜索
+  suggested_attr: 搜索型
+  conditions:
+    pri_level: "HPRF"
+    pri_mode: "抖动/随机"
+    rf_mode: "hopping"
+    pw_type: "medium"
+    beam_mode: "扫描"
+
+candidate_搜索型_106_MPRF-抖动_随机-narrow-agile-扫描:
+  status: candidate
+  source: signature_fallback
+  family: 搜索型
+  count: 59
+  stability: 0.453
+  signature_purity: 1.0
+  dominant_signature: "MPRF-抖动/随机-narrow-agile-扫描"
+  suggested_mode: 搜索
+  suggested_attr: 搜索型
+  conditions:
+    pri_level: "MPRF"
+    pri_mode: "抖动/随机"
+    rf_mode: "agile"
+    pw_type: "narrow"
+    beam_mode: "扫描"
+
+candidate_搜索型_107_MPRF-抖动_随机-wide-fixed-扫描:
+  status: candidate
+  source: signature_fallback
+  family: 搜索型
+  count: 42
+  stability: 0.4921
+  signature_purity: 1.0
+  dominant_signature: "MPRF-抖动/随机-wide-fixed-扫描"
+  suggested_mode: 搜索
+  suggested_attr: 搜索型
+  conditions:
+    pri_level: "MPRF"
+    pri_mode: "抖动/随机"
+    rf_mode: "fixed"
+    pw_type: "wide"
+    beam_mode: "扫描"
+
+candidate_火控型_101_MPRF-抖动_随机-medium-fixed-凝视:
+  status: candidate
+  source: signature_fallback
+  family: 火控型
+  count: 37
+  stability: 0.4572
+  signature_purity: 1.0
+  dominant_signature: "MPRF-抖动/随机-medium-fixed-凝视"
+  suggested_mode: 制导
+  suggested_attr: 火控型
+  conditions:
+    pri_level: "MPRF"
+    pri_mode: "抖动/随机"
+    rf_mode: "fixed"
+    pw_type: "medium"
+    beam_mode: "凝视"

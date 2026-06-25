@@ -1,0 +1,852 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# 雷达信号识别规则库 v3_strict
+#
+# 严格模式: 用于可信评估和真实工程
+# 设计原则:
+#   1. 所有数值阈值集中在此文件
+#   2. 证据不足时输出 待定/未知
+#   3. 默认分支置信度低, 不直接进入确定
+#   4. 功能属性主要依赖纯信号证据
+#   5. 参数可标定, 结果可审计
+# ═══════════════════════════════════════════════════════════════════════════════
+
+version: v3_strict
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 第一部分: 特征阈值 (中间特征分类)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+feature_thresholds:
+
+  prf:
+    hprf_max_pri: 10.0
+    mprf_max_pri: 200.0
+    lprf_max_pri: 500.0
+
+  pri_mode:
+    fixed_cv_max: 0.02
+    jitter_cv_min: 0.20
+    stagger_min_peaks: 2
+    stagger_max_peaks: 8
+    stagger_tolerance: 0.05
+
+  pa:
+    periodicity_strong: 0.25
+    periodicity_weak: 0.10
+    periodicity_min: 0.05
+    stability_cv_max: 0.15
+    dynamic_range_strong: 30.0
+    dynamic_range_moderate: 15.0
+    dynamic_range_weak: 10.0
+
+  doa:
+    valid_std_min: 0.01
+    gaze_range_max: 8.0
+    gaze_weak_range: 10.0
+    gaze_weak_cv: 0.30
+    jump_threshold: 5.0
+    scatter_min: 30.0
+
+  pw:
+    narrow_strong_max: 1.5
+    narrow_weak_max: 1.8
+    medium_min: 1.8
+    wide_min: 5.0
+    imaging_min: 8.0
+
+  rf:
+    fixed_std_max: 15.0
+    agile_std_min: 10.0
+    hop_std_min: 50.0
+    hop_ratio_threshold: 0.01
+    agile_ratio_threshold: 0.005
+    hop_std_multiplier: 5.0
+
+  duty_cycle:
+    very_high: 0.40
+    high: 0.30
+    medium: 0.10
+    low: 0.05
+
+  density:
+    high: 1000.0
+    very_high: 50000
+    silence_ratio_min: 0.3
+    cluster_score_min: 0.5
+    dense_pri_max: 50.0
+    silence_pri_min: 500.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 第二部分: 工作模式规则
+# ═══════════════════════════════════════════════════════════════════════════════
+
+work_mode_rules:
+
+  # ── 证据评分定义 ──────────────────────────────────────────────────────────
+  evidence_scores:
+    scan_score:
+      pa_periodicity_strong: { threshold: 0.10, weight: 0.30 }
+      pa_periodicity_weak: { threshold: 0.05, weight: 0.15 }
+      pa_entropy_low: { threshold: 0.7, weight: 0.20 }
+      pa_autocorr_high: { threshold: 0.3, weight: 0.20 }
+      pa_zcr_high: { threshold: 0.4, weight: 0.10 }
+      doa_trend: { doa_r2_min: 0.3, doa_slope_min: 0.1, weight: 0.20 }
+
+    gaze_score:
+      pa_cv_stable: { threshold: 0.08, weight: 0.30 }
+      pa_cv_weak: { threshold: 0.15, weight: 0.15 }
+      doa_range_small: { threshold: 10.0, weight: 0.20 }
+      doa_range_weak: { threshold: 20.0, weight: 0.10 }
+      pa_periodicity_low: { threshold: 0.05, weight: 0.10 }
+
+    guide_score:
+      hprf_narrow: { prf: "HPRF", pw: "窄脉宽", weight: 0.25 }
+      high_density_stable: { density_min: 30000, pa_cv_max: 0.10, weight: 0.20 }
+      gaze_evidence: { gaze_min: 0.5, weight: 0.20 }
+      rf_agile: { rf_modes: ["跳频", "捷变"], weight: 0.10 }
+      pri_stable: { pri_cv_max: 0.03, weight: 0.10 }
+
+    image_score:
+      wide_pulse: { pw_category: "宽脉宽", pw_min: 5.0, weight: 0.30 }
+      rf_agile: { rf_modes: ["捷变", "跳频"], weight: 0.20 }
+      wide_rf_agile: { pw_min: 8.0, rf_modes: ["捷变", "跳频"], weight: 0.15 }
+
+  # ── 判决阈值 ──────────────────────────────────────────────────────────────
+  decision:
+    known_min: 0.45
+    known_margin: 0.08
+    suspected_min: 0.25
+    evidence_min: 0.15
+    min_pulses_for_certain: 1000
+    min_pulses_for_weak: 300
+
+  # ── 拒绝条件 ──────────────────────────────────────────────────────────────
+  reject:
+    min_confident_features: 3
+    beam_uncertain_cap: 0.65
+    pri_uncertain_delta: 0.05
+    low_confident_delta: 0.05
+    confidence_min: 0.10
+
+  # ── 决策树 (保留 legacy 模式) ─────────────────────────────────────────────
+  scan_family:
+    conditions:
+      beam_mode: ["扫描", "扫描(弱周期)"]
+    branches:
+      - name: "LPRF_搜索"
+        conditions:
+          prf_level: "LPRF"
+          pw_category: ["宽脉宽", "中等脉宽"]
+        output:
+          mode: "搜索"
+          confidence: 0.85
+
+      - name: "MPRF_参差_搜索"
+        conditions:
+          prf_level: "MPRF"
+          pw_category: ["中等脉宽", "宽脉宽"]
+          pri_mode_prefix: "参差"
+        output:
+          mode: "搜索"
+          confidence: 0.75
+
+      - name: "MPRF_搜索"
+        conditions:
+          prf_level: "MPRF"
+          pw_category: ["中等脉宽", "宽脉宽"]
+        output:
+          mode: "搜索"
+          confidence: 0.80
+
+      - name: "HPRF_高占空比_搜索"
+        conditions:
+          prf_level: "HPRF"
+          duty_cycle_min: 0.30
+        output:
+          mode: "搜索"
+          confidence: 0.80
+
+      - name: "HPRF_窄_跳频_搜索"
+        conditions:
+          prf_level: "HPRF"
+          pw_category: "窄脉宽"
+          rf_mode: "跳频"
+        output:
+          mode: "搜索"
+          confidence: 0.60
+
+      - name: "HPRF_搜索"
+        conditions:
+          prf_level: "HPRF"
+        output:
+          mode: "搜索"
+          confidence: 0.70
+
+      - name: "默认_搜索"
+        conditions: {}
+        output:
+          mode: "疑似搜索"
+          confidence: 0.45
+    post_adjust:
+      - condition:
+          doa_dwell_min: 3.0
+          pa_periodicity_min: 0.2
+        delta: 0.05
+
+  gaze_family:
+    conditions:
+      beam_mode: ["凝视/驻留"]
+    branches:
+      - name: "HPRF_窄_高密度_制导"
+        conditions:
+          prf_level: "HPRF"
+          pw_category: "窄脉宽"
+          pulse_density_min: 50000
+        output:
+          mode: "制导"
+          confidence: 0.85
+
+      - name: "HPRF_窄_跟踪"
+        conditions:
+          prf_level: "HPRF"
+          pw_category: "窄脉宽"
+        output:
+          mode: "跟踪"
+          confidence: 0.80
+
+      - name: "LPRF_宽中_远程搜索"
+        conditions:
+          prf_level: "LPRF"
+          pw_category: ["宽脉宽", "中等脉宽"]
+        output:
+          mode: "搜索"
+          confidence: 0.75
+
+      - name: "MPRF_参差_跟踪"
+        conditions:
+          prf_level: "MPRF"
+          pri_mode_prefix: "参差"
+        output:
+          mode: "跟踪"
+          confidence: 0.78
+
+      - name: "MPRF_固定_跟踪"
+        conditions:
+          prf_level: "MPRF"
+          pri_mode: "固定"
+        output:
+          mode: "跟踪"
+          confidence: 0.75
+
+      - name: "LPRF_跟踪"
+        conditions:
+          prf_level: "LPRF"
+        output:
+          mode: "跟踪"
+          confidence: 0.65
+
+      - name: "默认_跟踪"
+        conditions: {}
+        output:
+          mode: "疑似跟踪"
+          confidence: 0.45
+    post_adjust:
+      - condition:
+          doa_jump_count_min: 3
+          doa_range_min_factor: 2.0
+        delta: -0.05
+
+  imaging_family:
+    conditions:
+      beam_mode_any: true
+    preconditions:
+      pw_category: "宽脉宽"
+      rf_mode: ["捷变", "跳频"]
+    branches:
+      - name: "超宽_成像"
+        conditions:
+          pw_mean_min: 20.0
+        output:
+          mode: "成像"
+          confidence: 0.75
+
+      - name: "宽_HPRF_MPRF_成像"
+        conditions:
+          pw_mean_min: 15.0
+          prf_level: ["HPRF", "MPRF"]
+        output:
+          mode: "成像"
+          confidence: 0.60
+
+      - name: "宽_搜索"
+        conditions: {}
+        output:
+          mode: "搜索"
+          confidence: 0.70
+
+  guide_family:
+    conditions:
+      beam_mode_any: true
+    branches:
+      - name: "HPRF_高占空比_搜索"
+        conditions:
+          prf_level: "HPRF"
+          duty_cycle_min: 0.30
+        output:
+          mode: "搜索"
+          confidence: 0.78
+
+      - name: "HPRF_窄_跳频_制导"
+        conditions:
+          prf_level: "HPRF"
+          pw_category: "窄脉宽"
+          rf_mode: "跳频"
+        output:
+          mode: "制导"
+          confidence: 0.75
+
+      - name: "HPRF_窄_高密度"
+        conditions:
+          prf_level: "HPRF"
+          pw_category: "窄脉宽"
+          pulse_density_min: 20000
+        output:
+          mode: "制导"
+          confidence: 0.85
+
+      - name: "HPRF_跳频_窄"
+        conditions:
+          prf_level: "HPRF"
+          rf_mode: "跳频"
+          pw_category: "窄脉宽"
+        output:
+          mode: "制导"
+          confidence: 0.60
+
+      - name: "MPRF_跳频_高密度"
+        conditions:
+          prf_level: "MPRF"
+          rf_mode: "跳频"
+          pulse_density_min: 50000
+        output:
+          mode: "制导"
+          confidence: 0.55
+
+  timeshare_family:
+    conditions:
+      beam_mode: ["分时调度"]
+    branches:
+      - name: "成簇静默_跟踪"
+        conditions:
+          pri_mode: "成簇静默"
+          silence_ratio_min: 0.5
+        output:
+          mode: "跟踪"
+          confidence: 0.65
+
+      - name: "抖动_MPRF_分时_搜索"
+        conditions:
+          pri_mode: "抖动/随机"
+          prf_level: "MPRF"
+          pw_category: "中等脉宽"
+        output:
+          mode: "搜索"
+          confidence: 0.55
+
+      - name: "抖动_HPRF_窄_分时_跟踪"
+        conditions:
+          pri_mode: "抖动/随机"
+          prf_level: "HPRF"
+          pw_category: "窄脉宽"
+        output:
+          mode: "跟踪"
+          confidence: 0.55
+
+      - name: "默认_跟踪"
+        conditions: {}
+        output:
+          mode: "疑似跟踪"
+          confidence: 0.45
+
+  uncertain_fallback:
+    conditions:
+      beam_mode: ["不确定"]
+    branches:
+      - name: "LPRF_宽中_搜索"
+        conditions:
+          prf_level: "LPRF"
+          pw_category: ["中等脉宽", "宽脉宽"]
+        output:
+          mode: "搜索"
+          confidence: 0.75
+
+      - name: "宽_捷变_成像"
+        conditions:
+          pw_category: "宽脉宽"
+          rf_mode: ["捷变", "跳频"]
+          pw_mean_min: 8.0
+        output:
+          mode: "成像"
+          confidence: 0.65
+
+      - name: "HPRF_窄_高密度_制导"
+        conditions:
+          prf_level: "HPRF"
+          pw_category: "窄脉宽"
+          pulse_density_min: 40000
+        output:
+          mode: "制导"
+          confidence: 0.65
+
+      - name: "HPRF_跳频_窄_制导"
+        conditions:
+          prf_level: "HPRF"
+          rf_mode: "跳频"
+          pw_category: "窄脉宽"
+        output:
+          mode: "制导"
+          confidence: 0.60
+
+      - name: "MPRF_跳频_高密度_制导"
+        conditions:
+          prf_level: "MPRF"
+          rf_mode: "跳频"
+          pulse_density_min: 50000
+        output:
+          mode: "制导"
+          confidence: 0.55
+
+      - name: "PA弱周期_搜索"
+        conditions:
+          pa_periodicity_min: 0.05
+        output:
+          mode: "搜索"
+          confidence: 0.60
+
+      - name: "HPRF_PA稳定_跟踪"
+        conditions:
+          prf_level: "HPRF"
+          pa_cv_max: 0.15
+        output:
+          mode: "跟踪"
+          confidence: 0.60
+
+      - name: "MPRF_窄_PA稳定_跟踪"
+        conditions:
+          prf_level: "MPRF"
+          pw_category: "窄脉宽"
+          pa_cv_max: 0.15
+        output:
+          mode: "跟踪"
+          confidence: 0.55
+
+      - name: "参差_跟踪"
+        conditions:
+          pri_mode_prefix: "参差"
+        output:
+          mode: "跟踪"
+          confidence: 0.60
+
+      - name: "抖动_HPRF_高密度_制导"
+        conditions:
+          pri_mode: "抖动/随机"
+          prf_level: "HPRF"
+          pulse_density_min: 50000
+        output:
+          mode: "制导"
+          confidence: 0.60
+
+      - name: "抖动_跳频_搜索"
+        conditions:
+          pri_mode: "抖动/随机"
+          rf_mode: "跳频"
+          pulse_density_min: 10000
+        output:
+          mode: "搜索"
+          confidence: 0.55
+
+      - name: "抖动_HPRF_搜索"
+        conditions:
+          pri_mode: "抖动/随机"
+          prf_level: "HPRF"
+        output:
+          mode: "搜索"
+          confidence: 0.58
+
+      - name: "抖动_MPRF_中PW_搜索"
+        conditions:
+          pri_mode: "抖动/随机"
+          prf_level: "MPRF"
+          pw_category: "中等脉宽"
+        output:
+          mode: "搜索"
+          confidence: 0.55
+
+      - name: "抖动_MPRF_窄PW_跟踪"
+        conditions:
+          pri_mode: "抖动/随机"
+          prf_level: "MPRF"
+          pw_category: "窄脉宽"
+        output:
+          mode: "跟踪"
+          confidence: 0.52
+
+      - name: "抖动_MPRF_宽PW_搜索"
+        conditions:
+          pri_mode: "抖动/随机"
+          prf_level: "MPRF"
+          pw_category: "宽脉宽"
+        output:
+          mode: "搜索"
+          confidence: 0.55
+
+      - name: "抖动_LPRF_搜索"
+        conditions:
+          pri_mode: "抖动/随机"
+          prf_level: "LPRF"
+        output:
+          mode: "搜索"
+          confidence: 0.52
+
+      - name: "固定_MPRF_搜索"
+        conditions:
+          pri_mode: "固定"
+          prf_level: "MPRF"
+        output:
+          mode: "搜索"
+          confidence: 0.55
+
+      - name: "最终_证据投票"
+        conditions: {}
+        output:
+          mode: "搜索"
+          confidence: 0.35
+        use_evidence_vote: true
+
+  rf_post_correction:
+    - condition:
+        rf_mode: ["捷变", "跳频"]
+        mode: "搜索"
+      delta: 0.05
+      cap: 0.95
+    - condition:
+        rf_mode: "固定"
+        mode: "制导"
+      delta: 0.05
+      cap: 0.95
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 第三部分: 功能属性规则
+# ═══════════════════════════════════════════════════════════════════════════════
+
+func_attr_rules:
+
+  fusion_weights:
+    signal_weight: 0.8
+    mode_weight: 0.2
+
+  strict_gate:
+    air_search:
+      rf_std_min: 250.0
+      doa_range_min: 14.0
+      pw_narrow_max: 1.8
+      pa_cv_min: 0.30
+      strong_rf_std_min: 700.0
+      strong_doa_range_min: 15.0
+
+    sea_search:
+      pri_min: 10.0
+      pri_max: 200.0
+      pw_min: 1.8
+      pw_max: 3.5
+      rf_std_max: 25.0
+      doa_range_max: 14.0
+      pa_cv_max: 0.18
+
+    fire_control:
+      pa_cv_max: 0.08
+      pa_periodicity_max: 0.06
+      pulse_density_min: 50000
+      allow_hprf: true
+      allow_track_or_guide_ratio_min: 0.6
+
+  reject_conditions:
+    min_pulses: 500
+    min_fusion_score: 0.35
+    ambiguity_gap: 0.08
+    ambiguity_min_second: 0.25
+
+  signal_scoring:
+    警戒:
+      description: "远程预警，大范围搜索"
+      rules:
+        - condition: { doa_range_min: 25.0 }
+          score: 0.30
+        - condition: { doa_range_min: 18.0 }
+          score: 0.15
+        - condition: { scan_evidence_min: 0.4 }
+          score: 0.25
+        - condition: { prf_level: ["LPRF", "VLPRF"] }
+          score: 0.20
+        - condition: { duty_cycle_min: 0.20 }
+          score: 0.15
+        - condition: { pa_entropy_max: 0.5, pa_autocorr_min: 0.3 }
+          score: 0.10
+        - condition: { doa_r2_min: 0.3 }
+          score: 0.10
+
+    对海搜索:
+      description: "搜索海面目标"
+      rules:
+        - condition: { scan_evidence_min: 0.4 }
+          score: 0.25
+        - condition: { prf_level: ["MPRF", "LPRF"] }
+          score: 0.20
+        - condition: { pw_type: ["medium", "wide"] }
+          score: 0.20
+        - condition: { doa_range_max: 20.0 }
+          score: 0.15
+        - condition: { switch_rate_max: 0.15 }
+          score: 0.10
+        - condition: { pa_entropy_min: 0.4, pa_entropy_max: 0.8, doa_r2_max: 0.2 }
+          score: 0.10
+        - condition: { prf_level: "MPRF", pw_type: "medium", doa_range_min: 15.0, doa_range_max: 25.0 }
+          score: 0.10
+
+    对空搜索:
+      description: "搜索空中目标"
+      rules:
+        - condition: { scan_evidence_min: 0.3 }
+          score: 0.20
+        - condition: { doa_range_min: 15.0, doa_range_max: 30.0 }
+          score: 0.25
+        - condition: { prf_level: ["LPRF", "MPRF"] }
+          score: 0.15
+        - condition: { pw_type: "narrow" }
+          score: 0.15
+        - condition: { track_ratio_min: 0.05 }
+          score: 0.15
+        - condition: { doa_r2_min: 0.1, doa_r2_max: 0.4 }
+          score: 0.10
+        - condition: { prf_level: "MPRF", pw_type: "narrow", doa_range_min: 15.0, doa_range_max: 25.0 }
+          score: 0.10
+        - condition: { rf_behavior: "hopping", pw_type: "narrow" }
+          score: 0.10
+
+    导航:
+      description: "导航辅助"
+      rules:
+        - condition: { param_stability_min: 10.0 }
+          score: 0.30
+        - condition: { rf_behavior: "fixed" }
+          score: 0.20
+        - condition: { switch_rate_max: 0.05 }
+          score: 0.30
+        - condition: { doa_range_max: 10.0 }
+          score: 0.10
+
+    火控:
+      description: "火力控制，制导"
+      rules:
+        - condition: { prf_level: "HPRF" }
+          score: 0.30
+        - condition: { pa_cv_max: 0.15 }
+          score: 0.20
+        - condition: { pulse_density_min: 20000, prf_level: "HPRF" }
+          score: 0.20
+        - condition: { pulse_density_min: 50000 }
+          score: 0.10
+        - condition: { pw_type: "narrow", prf_level: "HPRF" }
+          score: 0.15
+
+    侦察:
+      description: "电子侦察"
+      rules:
+        - condition: { pw_type: "wide", pw_mean_min: 8.0 }
+          score: 0.40
+        - condition: { rf_behavior: ["agile", "hopping"] }
+          score: 0.20
+        - condition: { pw_mean_min: 5.0 }
+          score: 0.10
+
+  mode_consistency_bonus:
+    search_dominant:
+      threshold: 0.7
+      rules:
+        - condition: { doa_range_min: 25.0 }
+          attr: "警戒"
+          bonus: 0.15
+        - condition: { doa_range_max: 18.0 }
+          attr: "对海搜索"
+          bonus: 0.15
+        - condition: {}
+          attr: "对空搜索"
+          bonus: 0.15
+
+    track_dominant:
+      threshold: 0.7
+      rules:
+        - condition: {}
+          attr: "火控"
+          bonus: 0.15
+
+    guide_dominant:
+      threshold: 0.7
+      rules:
+        - condition: {}
+          attr: "火控"
+          bonus: 0.35
+      threshold_low: 0.4
+      rules_low:
+        - condition: {}
+          attr: "火控"
+          bonus: 0.20
+
+  candidates:
+    - name: "警戒"
+      conditions:
+        r_search_min: 0.72
+        doa_coverage_min: 30.0
+        r_guide_max: 0.2
+      confidence:
+        base: 0.80
+        bonus_factor: 0.05
+        bonus_source: "r_search"
+
+    - name: "对海搜索"
+      conditions:
+        r_search_min: 0.6
+        scan_evidence_min: 0.5
+        switch_rate_max: 0.2
+      confidence:
+        base: 0.75
+        bonus_factor: 0.05
+        bonus_source: "scan_evidence"
+
+    - name: "对空搜索"
+      conditions:
+        r_search_min: 0.48
+        r_track_min: 0.1
+        doa_coverage_min: 20.0
+      confidence:
+        base: 0.70
+        bonus_factor: 0.05
+        bonus_source: "r_track"
+
+    - name: "对空搜索"
+      conditions:
+        r_search_min: 0.70
+        doa_coverage_min: 10.0
+      confidence:
+        base: 0.68
+        bonus_factor: 0.05
+        bonus_source: "r_search"
+
+    - name: "导航"
+      conditions:
+        param_stability_min: 5.0
+        switch_rate_max: 0.05
+        r_guide_max: 0.2
+        r_track_max: 0.2
+      confidence:
+        base: 0.75
+        bonus_factor: 0.05
+        bonus_source: "param_stability"
+        bonus_scale: 0.1
+
+    - name: "火控"
+      conditions:
+        r_track_plus_guide_min: 0.4
+        or_conditions:
+          - { doa_dwell_avg_min: 5.0 }
+          - { r_guide_min: 0.2 }
+      confidence:
+        base: 0.75
+        bonus_factor: 0.05
+        bonus_source: "r_track_plus_guide"
+
+    - name: "成像_对空"
+      conditions:
+        r_image_min: 0.3
+        doa_coverage_min: 20.0
+      confidence:
+        base: 0.70
+        bonus_factor: 0.05
+        bonus_source: "r_image"
+
+    - name: "成像_对海"
+      conditions:
+        r_image_min: 0.3
+        doa_coverage_max: 20.0
+      confidence:
+        base: 0.65
+        bonus_factor: 0.05
+        bonus_source: "r_image"
+
+  fallback:
+    - condition: { r_search_min: 0.5 }
+      candidates:
+        - { mode: "对空搜索", confidence: 0.55 }
+        - { mode: "对海搜索", confidence: 0.50 }
+    - condition: { r_track_min: 0.4 }
+      candidates:
+        - { mode: "火控", confidence: 0.55 }
+        - { mode: "对空搜索", confidence: 0.45 }
+    - condition: {}
+      candidates:
+        - { mode: "警戒", confidence: 0.40 }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 第四部分: 分类与后处理
+# ═══════════════════════════════════════════════════════════════════════════════
+
+classification:
+  certain_min: 0.75
+  weak_min: 0.55
+  min_confident_features: 3
+
+uncertainty_penalty:
+  beam_uncertain_cap: 0.65
+  pri_uncertain_delta: 0.05
+  low_confident_delta: 0.05
+  confidence_min: 0.10
+
+postprocess:
+  event_timeline:
+    min_trigger_pulses: 50
+    min_silence_beats: 5
+    min_event_beats: 3
+  smoothing:
+    beam_median_window: 5
+    run_merge_min_length: 2
+  silence:
+    silence_pri_min: 500.0
+  low_pulse:
+    min_pulses_for_mode: 300
+
+signal_classification:
+  prf:
+    hprf_max_pri: 10.0
+    mprf_max_pri: 200.0
+    lprf_max_pri: 500.0
+  rf:
+    fixed_std_max: 15.0
+    agile_std_min: 10.0
+    hop_std_min: 50.0
+  pw:
+    narrow_max: 1.5
+    wide_min: 5.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 第五部分: 评估目标
+# ═══════════════════════════════════════════════════════════════════════════════
+
+evaluation:
+  target_pending_rate: 0.15
+  target_unknown_rate: 0.10
+  min_joint_agreement: 0.75

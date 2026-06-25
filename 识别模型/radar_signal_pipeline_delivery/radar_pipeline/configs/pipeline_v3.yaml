@@ -1,0 +1,65 @@
+# 新管线主配置 v3.0
+#
+# 使用方式:
+#   python -m app.run_pipeline --config radar_pipeline/configs/pipeline_v3.yaml
+
+# 管线版本
+version: "3.0"
+
+# 输入文件
+input_files:
+  - "F:/signals/sample1_template_match_pdw_with_pred_label.txt"
+  - "F:/signals/sample2_template_match_pdw_with_pred_label.txt"
+
+# 窗口参数
+window:
+  duration_s: 0.200           # 固定 200ms
+  base_time: 0.0              # 窗口编号基准时间
+  min_pulses: 100             # 每部雷达最少脉冲数
+
+# 特征计算
+features:
+  min_pulses_for_stats: 5     # 计算统计量的最低脉冲数
+  pa_spectral_min_pulses: 8   # PA 频域特征最低脉冲数
+  doa_trend_min_pulses: 8     # DOA 趋势最低脉冲数
+
+# 变化点检测
+change_detection:
+  method: "auto"              # "auto", "custom", "ruptures"
+  min_gap: 4                  # 变化点最小间距 (窗口数)
+  n_sync_features: 2          # 至少几个特征同步变化
+  z_threshold: 2.5            # 标准化后的阈值
+  z_max: 10.0                 # 最大 z 值
+
+# 状态段
+state_segments:
+  min_valid_ratio: 0.3        # 最低有效窗口比例
+  limited_merge_evidence: 3   # 有限合并所需一致证据数
+
+# 模式识别
+mode_recognition:
+  known_min: 0.45             # 确定分类最低得分
+  known_margin: 0.08          # 确定分类最低差距
+  suspected_min: 0.25         # 疑似分类最低得分
+
+# 时序解码
+temporal_decoding:
+  min_duration_windows: 3     # 最小持续时间 (窗口数)
+  short_duration_penalty: 0.5 # 短段惩罚
+
+# 功能属性
+function_attribute:
+  signal_weight: 0.85         # 信号路径权重
+  mode_weight: 0.15           # 模式上下文权重
+  windows_per_attr: 5         # 每个属性窗口的窗口数 (1秒)
+
+# 块输出
+block_output:
+  duration_s: 5.0             # 块时长 (秒)
+  windows_per_block: 25       # 每块窗口数
+
+# 输出
+output:
+  base_dir: "artifacts/runs"
+  save_config_snapshot: true
+  save_manifest: true

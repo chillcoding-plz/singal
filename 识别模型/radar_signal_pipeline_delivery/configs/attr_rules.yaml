@@ -1,0 +1,328 @@
+# 功能属性规则知识库 (v2 - 去循环依赖版)
+#
+# 核心原则: 属性预测必须完全基于信号特征，不依赖模式预测结果。
+#
+# 规则分类:
+#   A类 (current_mode)      : 已全部删除 — 消除循环依赖
+#   B类 (r_search/r_track等) : 权重减半 — 保留上下文信息但不主导
+#   C类 (纯信号特征)         : 增强 — 独立判别的主力
+#   C'类 (上下文平滑信号)    : 保留
+
+func_attrs:
+  警戒:
+    description: "大范围空域监视/警戒雷达"
+    positive:
+      # ── C类: 纯信号特征 ──
+      - feature: signal_strength
+        equals: "strong"
+        weight: 0.25
+        evidence: "强信号(大功率)"
+      - feature: beam_mode
+        equals: "扫描"
+        weight: 0.25
+        evidence: "波束扫描"
+      - feature: scan_evidence
+        op: ">"
+        value: 0.5
+        weight: 0.20
+        evidence: "PA扫描证据"
+      - feature: pa_periodicity_level
+        equals: "strong"
+        weight: 0.20
+        evidence: "强PA周期性(天线扫描)"
+      - feature: pri_level
+        in: ["LPRF", "VLPRF"]
+        weight: 0.15
+        evidence: "低重频(搜索特征)"
+      # ── B类: 上下文比例 (权重减半) ──
+      - feature: r_search
+        op: ">"
+        value: 0.72
+        weight: 0.12
+        evidence: "搜索模式主导"
+      - feature: doa_coverage
+        op: ">"
+        value: 30.0
+        weight: 0.10
+        evidence: "DOA覆盖范围广"
+    negative:
+      - feature: pw_type
+        in: ["narrow"]
+        weight: -0.20
+        evidence: "窄脉冲(非警戒特征)"
+      - feature: pulse_density_level
+        equals: "very_high"
+        weight: -0.20
+        evidence: "极高密度(非警戒)"
+
+  对海搜索:
+    description: "海面搜索雷达"
+    positive:
+      # ── C类: 纯信号特征 ──
+      - feature: rf_band
+        equals: "mid"
+        weight: 0.25
+        evidence: "中频段"
+      - feature: beam_mode
+        equals: "扫描"
+        weight: 0.25
+        evidence: "波束扫描"
+      - feature: scan_evidence
+        op: ">"
+        value: 0.5
+        weight: 0.20
+        evidence: "PA扫描证据"
+      - feature: pa_periodicity_level
+        equals: "strong"
+        weight: 0.20
+        evidence: "强PA周期性"
+      - feature: pri_level
+        in: ["MPRF", "LPRF"]
+        weight: 0.15
+        evidence: "中低重频(海搜特征)"
+      # ── B类: 上下文比例 (权重减半) ──
+      - feature: r_search
+        op: ">"
+        value: 0.6
+        weight: 0.12
+        evidence: "搜索模式主导"
+      - feature: switch_rate
+        op: "<"
+        value: 0.2
+        weight: 0.05
+        evidence: "模式切换少"
+    negative:
+      - feature: signal_strength
+        equals: "weak"
+        weight: -0.15
+        evidence: "弱信号(非海面搜索)"
+      - feature: pw_type
+        in: ["narrow"]
+        weight: -0.20
+        evidence: "窄脉冲(非搜索特征)"
+
+  对空搜索:
+    description: "对空搜索/监视雷达"
+    positive:
+      # ── C类: 纯信号特征 ──
+      - feature: signal_strength
+        equals: "strong"
+        weight: 0.25
+        evidence: "强信号"
+      - feature: beam_mode
+        equals: "扫描"
+        weight: 0.20
+        evidence: "波束扫描"
+      - feature: rf_band
+        equals: "high"
+        weight: 0.20
+        evidence: "高频段"
+      - feature: pa_periodicity_level
+        equals: "strong"
+        weight: 0.20
+        evidence: "强PA周期性"
+      - feature: pri_level
+        in: ["LPRF", "VLPRF", "MPRF"]
+        weight: 0.20
+        evidence: "中低重频(搜索特征)"
+      - feature: doa_range_deg
+        op: ">"
+        value: 15.0
+        weight: 0.15
+        evidence: "DOA覆盖范围宽"
+      - feature: scan_evidence
+        op: ">"
+        value: 0.3
+        weight: 0.15
+        evidence: "PA扫描证据"
+      # ── B类: 上下文比例 (权重减半) ──
+      - feature: r_search
+        op: ">"
+        value: 0.48
+        weight: 0.12
+        evidence: "搜索模式主导"
+      - feature: r_track
+        op: ">"
+        value: 0.1
+        weight: 0.08
+        evidence: "具备跟踪能力"
+    negative:
+      - feature: pw_type
+        in: ["narrow"]
+        weight: -0.15
+        evidence: "窄脉冲(非搜索特征)"
+      - feature: pulse_density_level
+        equals: "very_high"
+        weight: -0.20
+        evidence: "极高密度(非搜索)"
+
+  导航:
+    description: "导航雷达"
+    positive:
+      # ── C类: 纯信号特征 ──
+      - feature: pri_mode
+        equals: "固定"
+        weight: 0.45
+        evidence: "固定PRI(导航典型)"
+      - feature: beam_mode
+        equals: "凝视"
+        weight: 0.40
+        evidence: "凝视波束(导航)"
+      - feature: param_stability
+        op: ">"
+        value: 20.0
+        weight: 0.30
+        evidence: "参数极高稳定性"
+      - feature: pa_stability
+        equals: "high"
+        weight: 0.20
+        evidence: "PA高度稳定"
+      - feature: pri_cv
+        op: "<"
+        value: 0.03
+        weight: 0.20
+        evidence: "PRI极低抖动"
+      # ── B类: 上下文比例 (权重减半) ──
+      - feature: switch_rate
+        op: "<"
+        value: 0.05
+        weight: 0.08
+        evidence: "模式切换极少"
+    negative:
+      - feature: beam_mode
+        equals: "扫描"
+        weight: -0.30
+        evidence: "波束扫描(非导航)"
+      - feature: rf_mode
+        in: ["hopping", "agile"]
+        weight: -0.20
+        evidence: "RF捷变(非导航)"
+      - feature: signal_strength
+        equals: "strong"
+        weight: -0.15
+        evidence: "强信号(非导航)"
+
+  火控:
+    description: "火控/跟踪雷达"
+    positive:
+      # ── C类: 纯信号特征 ──
+      - feature: pw_type
+        equals: "narrow"
+        weight: 0.25
+        evidence: "窄脉冲(火控特征)"
+      - feature: pri_level
+        equals: "HPRF"
+        weight: 0.25
+        evidence: "高重频(火控特征)"
+      - feature: pa_stability
+        equals: "high"
+        weight: 0.25
+        evidence: "PA高度稳定(持续照射)"
+      - feature: pri_mode
+        equals: "固定"
+        weight: 0.20
+        evidence: "固定PRI(火控特征)"
+      - feature: signal_strength
+        equals: "weak"
+        weight: 0.15
+        evidence: "弱信号(远距离)"
+      - feature: pulse_density_level
+        equals: "very_high"
+        weight: 0.20
+        evidence: "极高脉冲密度(持续照射)"
+      - feature: pri_cv
+        op: "<"
+        value: 0.05
+        weight: 0.15
+        evidence: "PRI低抖动(精确跟踪)"
+      # ── B类: 上下文比例 (权重减半) ──
+      - feature: r_track_plus_guide
+        op: ">"
+        value: 0.4
+        weight: 0.12
+        evidence: "跟踪/制导模式主导"
+    negative:
+      - feature: pw_type
+        in: ["wide", "ultra_wide"]
+        weight: -0.20
+        evidence: "宽脉冲(非火控)"
+      - feature: beam_mode
+        equals: "扫描"
+        weight: -0.20
+        evidence: "波束扫描(非火控)"
+      - feature: pa_periodicity_level
+        equals: "strong"
+        weight: -0.15
+        evidence: "强PA周期性(非火控)"
+
+  侦察:
+    description: "SAR/ISAR成像侦察雷达"
+    positive:
+      # ── C类: 纯信号特征 ──
+      - feature: pw_type
+        in: ["wide", "ultra_wide"]
+        weight: 0.30
+        evidence: "宽/超宽脉冲(SAR特征)"
+      - feature: rf_mode
+        in: ["agile", "hopping"]
+        weight: 0.30
+        evidence: "RF捷变/跳频(SAR特征)"
+      - feature: rf_mode
+        equals: "hopping"
+        weight: 0.25
+        evidence: "RF跳频(SAR特征)"
+      - feature: pri_level
+        in: ["MPRF", "LPRF"]
+        weight: 0.15
+        evidence: "中低重频(成像特征)"
+      - feature: pri_mode
+        in: ["参差", "抖动/随机"]
+        weight: 0.15
+        evidence: "PRI参差/随机(成像特征)"
+      # ── B类: 上下文比例 (权重减半) ──
+      - feature: r_image
+        op: ">"
+        value: 0.3
+        weight: 0.15
+        evidence: "成像模式主导"
+    negative:
+      - feature: pw_type
+        equals: "narrow"
+        weight: -0.25
+        evidence: "窄脉冲(非成像侦察)"
+      - feature: signal_strength
+        equals: "strong"
+        weight: -0.15
+        evidence: "强信号(非侦察)"
+      - feature: pa_stability
+        equals: "high"
+        weight: -0.10
+        evidence: "PA高度稳定(非侦察)"
+
+# 决策阈值
+decision:
+  accept_threshold: 0.35
+  reject_threshold: 0.25
+  margin_threshold: 0.10
+
+# 备选规则 (当无候选时)
+fallback:
+  - condition: {r_search: ">", value: 0.5}
+    candidates:
+      - {attr: "对空搜索", conf: 0.55}
+      - {attr: "警戒", conf: 0.50}
+      - {attr: "对海搜索", conf: 0.45}
+  - condition: {r_track: ">", value: 0.4}
+    candidates:
+      - {attr: "火控", conf: 0.55}
+      - {attr: "对空搜索", conf: 0.40}
+  - condition: {r_image: ">", value: 0.3}
+    candidates:
+      - {attr: "对空搜索", conf: 0.55}
+      - {attr: "对海搜索", conf: 0.50}
+  - condition: {r_guide: ">", value: 0.4}
+    candidates:
+      - {attr: "火控", conf: 0.55}
+  - condition: {default: true}
+    candidates:
+      - {attr: "未知", conf: 0.30}

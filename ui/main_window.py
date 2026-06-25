@@ -1,3 +1,4 @@
+import json
 import os
 import time
 from datetime import datetime
@@ -12,6 +13,7 @@ from PyQt5.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -21,6 +23,8 @@ from PyQt5.QtWidgets import (
     QSplitter,
     QStatusBar,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -39,6 +43,7 @@ from core.pipelines import (
     run_pipeline_from_hdbscan,
     run_sorting_pipeline,
 )
+from core.radar_attribute_adapter import RadarAttributeDashboard, run_radar_attribute_pipeline
 from core.recognition_algorithms import RecognitionOutput, run_recognition
 from core.sorting_algorithms import SortingOutput
 from utils.helpers import format_elapsed
@@ -458,9 +463,21 @@ class MainWindow(QMainWindow):
         self.recognition_ribbon.sorting_result_btn.setVisible(False)
         self.recognition_ribbon.template_btn.setText("生成模板库")
         self.recognition_ribbon.template_btn.set_icon_kind("template")
-        self.export_ribbon.import_btn.setVisible(False)
-        self.export_ribbon.method_btn.setVisible(False)
-        self.export_ribbon.compare_btn.setVisible(False)
+        self.export_ribbon.import_btn.setText("返回识别")
+        self.export_ribbon.import_btn.set_icon_kind("import")
+        self.export_ribbon.truth_btn.setText("导入识别结果")
+        self.export_ribbon.truth_btn.set_icon_kind("import")
+        self.export_ribbon.truth_btn.setVisible(True)
+        self.export_ribbon.run_btn.setText("模式属性分析")
+        self.export_ribbon.method_btn.setText("导出 JSON")
+        self.export_ribbon.method_btn.set_icon_kind("export")
+        self.export_ribbon.compare_btn.setText("导出 CSV")
+        self.export_ribbon.compare_btn.set_icon_kind("export")
+        self.export_ribbon.template_btn.setText("导出报告")
+        self.export_ribbon.template_btn.set_icon_kind("template")
+        self.export_ribbon.template_btn.setVisible(True)
+        self.export_ribbon.export_btn.setText("打开输出目录")
+        self.export_ribbon.export_btn.set_icon_kind("export")
         self.export_page = self._export_page()
 
         self.tabs.addTab(self.home_page, "主页")
@@ -502,38 +519,420 @@ class MainWindow(QMainWindow):
     def _export_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(10, 10, 10, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 8, 8, 6)
+        layout.setSpacing(7)
         layout.addWidget(self.export_ribbon)
-        body = QHBoxLayout()
-        layout.addLayout(body, 1)
-        card = QFrame()
-        card.setProperty("class", "card")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(18, 16, 18, 16)
-        title = QLabel("结果导出")
-        title.setProperty("class", "sectionTitle")
-        text = QLabel("支持导出：分选结果 CSV、识别结果 CSV、图表 PNG、运行日志 TXT、总结报告 TXT/HTML。")
-        text.setWordWrap(True)
-        card_layout.addWidget(title)
-        card_layout.addWidget(text)
-        for label, handler in [
-            ("导出分选结果 CSV", self.export_sorting_file),
-            ("导出识别结果 CSV", self.export_recognition_file),
-            ("导出当前图表 PNG", self.export_current_charts),
-            ("导出运行日志 TXT", self.export_log_file),
-            ("生成总结报告", self.export_report_file),
-        ]:
-            button = QPushButton(label)
-            button.clicked.connect(handler)
-            card_layout.addWidget(button)
-        card_layout.addStretch(1)
-        body.addWidget(card, 1)
+
         self.export_method_panel = MethodPanel()
-        self.export_method_panel.setMinimumWidth(260)
-        self.export_method_panel.setMaximumWidth(320)
-        body.addWidget(self.export_method_panel)
+        self.export_method_panel.setVisible(False)
+
+        meta = QFrame()
+        meta.setProperty("class", "card")
+        meta_layout = QHBoxLayout(meta)
+        meta_layout.setContentsMargins(12, 7, 12, 7)
+        meta_layout.setSpacing(18)
+        self.export_task_label = QLabel("任务名称：未生成")
+        self.export_radar_label = QLabel("选中雷达：-")
+        self.export_block_label = QLabel("块时长：5.0 s")
+        self.export_interval_label = QLabel("显示间隔：30.0 s")
+        self.export_change_label = QLabel("变化点方法：auto")
+        self.export_run_state_label = QLabel("运行状态：待生成")
+        for label in [
+            self.export_task_label,
+            self.export_radar_label,
+            self.export_block_label,
+            self.export_interval_label,
+            self.export_change_label,
+            self.export_run_state_label,
+        ]:
+            label.setProperty("class", "subtle")
+            meta_layout.addWidget(label)
+        meta_layout.addStretch(1)
+        layout.addWidget(meta)
+
+        grid = QGridLayout()
+        grid.setSpacing(7)
+        layout.addLayout(grid, 1)
+
+        self.export_mode_chart = PgChartCard("工作模式时间线与置信度分数（200 ms 窗口级）", compact=True)
+        self.export_attr_chart = PgChartCard("功能属性时间线与准确率分数（200 ms 窗口级）", compact=True)
+        self.export_mode_chart.setMinimumHeight(210)
+        self.export_attr_chart.setMinimumHeight(210)
+        grid.addWidget(self.export_mode_chart, 0, 0)
+        grid.addWidget(self.export_attr_chart, 0, 1)
+
+        score_card = QFrame()
+        score_card.setProperty("class", "card")
+        score_layout = QVBoxLayout(score_card)
+        score_layout.setContentsMargins(12, 10, 12, 10)
+        score_title = QLabel("识别准确率")
+        score_title.setProperty("class", "sectionTitle")
+        score_layout.addWidget(score_title)
+        self.mode_accuracy_value, self.mode_accuracy_bar = self._build_accuracy_metric(score_layout, "工作模式识别准确率")
+        self.attr_accuracy_value, self.attr_accuracy_bar = self._build_accuracy_metric(score_layout, "功能属性识别准确率")
+        score_layout.addStretch(1)
+        grid.addWidget(score_card, 0, 2)
+
+        table_card = QFrame()
+        table_card.setProperty("class", "card")
+        table_layout = QVBoxLayout(table_card)
+        table_layout.setContentsMargins(10, 8, 10, 10)
+        table_title = QLabel("30 s 输出块内模式/属性时间线")
+        table_title.setProperty("class", "sectionTitle")
+        self.export_table_window_label = QLabel("当前时间范围：-")
+        self.export_table_window_label.setProperty("class", "subtle")
+        title_row = QHBoxLayout()
+        title_row.addWidget(table_title)
+        title_row.addStretch(1)
+        title_row.addWidget(self.export_table_window_label)
+        table_layout.addLayout(title_row)
+        self.export_segment_table = QTableWidget(0, 7)
+        self.export_segment_table.setHorizontalHeaderLabels(["序号", "时间范围(s)", "脉冲数", "工作模式", "准确率", "雷达源", "雷达ID"])
+        self.export_segment_table.setAlternatingRowColors(True)
+        self.export_segment_table.verticalHeader().setVisible(False)
+        self.export_segment_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.export_segment_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.export_segment_table.setSelectionBehavior(QTableWidget.SelectRows)
+        table_layout.addWidget(self.export_segment_table, 1)
+        grid.addWidget(table_card, 1, 0, 1, 2)
+
+        summary_card = QFrame()
+        summary_card.setProperty("class", "card")
+        summary_layout = QVBoxLayout(summary_card)
+        summary_layout.setContentsMargins(12, 10, 12, 10)
+        summary_title = QLabel("输出摘要 / 分析摘要")
+        summary_title.setProperty("class", "sectionTitle")
+        summary_layout.addWidget(summary_title)
+        self.export_summary_text = QTextEdit()
+        self.export_summary_text.setReadOnly(True)
+        self.export_summary_text.setMinimumWidth(250)
+        summary_layout.addWidget(self.export_summary_text, 1)
+        grid.addWidget(summary_card, 1, 2)
+
+        grid.setColumnStretch(0, 3)
+        grid.setColumnStretch(1, 3)
+        grid.setColumnStretch(2, 2)
+        grid.setRowStretch(0, 2)
+        grid.setRowStretch(1, 2)
+
+        self._refresh_export_dashboard(None)
         return page
+
+    def _build_accuracy_metric(self, layout: QVBoxLayout, title: str):
+        label = QLabel(title)
+        label.setProperty("class", "subtle")
+        value = QLabel("--")
+        value.setAlignment(Qt.AlignCenter)
+        value.setStyleSheet("font-size: 28px; font-weight: 700; color: #0052b5;")
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(0)
+        bar.setFormat("0.0%")
+        layout.addWidget(label)
+        layout.addWidget(value)
+        layout.addWidget(bar)
+        return value, bar
+
+    def _segment_float(self, value, default: float = 0.0) -> float:
+        try:
+            if pd.isna(value):
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _segments_score(self, segments: pd.DataFrame, primary: str, fallback: str = "accuracy") -> float:
+        if segments is None or segments.empty:
+            return 0.0
+        for column in [primary, fallback]:
+            if column in segments.columns:
+                values = pd.to_numeric(segments[column], errors="coerce").dropna()
+                if not values.empty:
+                    return float(values.mean())
+        return 0.0
+
+    def _set_metric(self, value_label: QLabel, bar: QProgressBar, score: float):
+        score = max(0.0, min(1.0, float(score or 0.0)))
+        value_label.setText(f"{score:.2f}")
+        bar.setValue(int(round(score * 100)))
+        bar.setFormat(f"{score * 100:.1f}%")
+
+    def _label_color(self, label: str, index: int) -> tuple:
+        palette = [
+            (30, 136, 229),
+            (43, 160, 72),
+            (251, 140, 0),
+            (103, 58, 183),
+            (117, 117, 117),
+            (0, 150, 136),
+            (216, 67, 21),
+            (84, 110, 122),
+        ]
+        return palette[index % len(palette)]
+
+    def _plot_export_timeline(self, card: PgChartCard, segments: pd.DataFrame, label_column: str, score_column: str):
+        card.clear()
+        plot = card._plot_item
+        plot.setLabel("bottom", "时间 (s)")
+        plot.setLabel("left", "分数")
+        plot.setYRange(-0.05, 1.28)
+        plot.showGrid(x=True, y=True, alpha=0.25)
+        if segments is None or segments.empty or label_column not in segments.columns:
+            card.show_empty()
+            return
+
+        view = segments.copy()
+        if "start_time" not in view.columns:
+            card.show_empty()
+            return
+        view["start_time"] = pd.to_numeric(view["start_time"], errors="coerce")
+        if "end_time" in view.columns:
+            view["end_time"] = pd.to_numeric(view["end_time"], errors="coerce")
+        else:
+            view["end_time"] = view["start_time"] + 0.2
+        if score_column in view.columns:
+            view["_score"] = pd.to_numeric(view[score_column], errors="coerce")
+        elif "accuracy" in view.columns:
+            view["_score"] = pd.to_numeric(view["accuracy"], errors="coerce")
+        else:
+            view["_score"] = 0.0
+        view["_label"] = view[label_column].fillna("未知").astype(str).str.strip().replace("", "未知")
+        view = view.dropna(subset=["start_time", "end_time"])
+        if view.empty:
+            card.show_empty()
+            return
+        view.loc[view["end_time"] <= view["start_time"], "end_time"] = view["start_time"] + 0.2
+        view["_start_key"] = view["start_time"].round(3)
+        view["_end_key"] = view["end_time"].round(3)
+
+        rows = []
+        for (_, _), group in view.groupby(["_start_key", "_end_key"], sort=True):
+            labels = group["_label"].replace("", "未知")
+            label = labels.value_counts().index[0] if not labels.empty else "未知"
+            score_values = pd.to_numeric(group["_score"], errors="coerce").dropna()
+            rows.append({
+                "start_time": float(group["start_time"].min()),
+                "end_time": float(group["end_time"].max()),
+                "label": str(label),
+                "score": float(score_values.mean()) if not score_values.empty else 0.0,
+            })
+        window_view = pd.DataFrame(rows).sort_values("start_time").reset_index(drop=True)
+        if window_view.empty:
+            card.show_empty()
+            return
+
+        max_points = 240
+        if len(window_view) > max_points:
+            step = max(1, int(len(window_view) / max_points))
+            window_view = window_view.iloc[::step].tail(max_points).reset_index(drop=True)
+
+        label_order = []
+        for label in window_view["label"]:
+            if label not in label_order:
+                label_order.append(label)
+        color_map = {label: self._label_color(label, i) for i, label in enumerate(label_order)}
+        legend = plot.addLegend(offset=(-8, 8))
+
+        bands = []
+        for _, row in window_view.iterrows():
+            label = str(row["label"])
+            start_time = self._segment_float(row.get("start_time"), 0.0)
+            end_time = self._segment_float(row.get("end_time"), start_time + 0.2)
+            if bands and bands[-1]["label"] == label and abs(bands[-1]["end_time"] - start_time) <= 1e-3:
+                bands[-1]["end_time"] = end_time
+            else:
+                bands.append({"label": label, "start_time": start_time, "end_time": end_time})
+
+        used = set()
+        for band in bands:
+            label = band["label"]
+            name = label if label not in used and len(used) < 8 else None
+            used.add(label)
+            plot.plot([band["start_time"], band["end_time"]], [1.16, 1.16], pen=pg.mkPen(color=color_map[label], width=10), name=name)
+
+        xs = ((window_view["start_time"] + window_view["end_time"]) / 2.0).astype(float).tolist()
+        ys = window_view["score"].clip(0.0, 1.0).astype(float).tolist()
+        if xs:
+            plot.plot(xs, ys, pen=pg.mkPen(color=(30, 136, 229), width=2.0), symbol="o", symbolSize=5)
+            x0 = float(window_view["start_time"].min())
+            x1 = float(window_view["end_time"].max())
+            plot.setXRange(x0, x1 if x1 > x0 else x0 + 1.0, padding=0.03)
+        if legend is not None:
+            legend.setLabelTextSize("8pt")
+        card._initialized = True
+
+    def _refresh_export_dashboard(self, output: Optional[RadarAttributeDashboard]):
+        if output is None:
+            self.export_mode_chart.show_empty()
+            self.export_attr_chart.show_empty()
+            self._set_metric(self.mode_accuracy_value, self.mode_accuracy_bar, 0.0)
+            self._set_metric(self.attr_accuracy_value, self.attr_accuracy_bar, 0.0)
+            self.export_segment_table.setRowCount(0)
+            self.export_summary_text.setPlainText("尚未生成工作模式/功能属性识别结果。")
+            self.export_run_state_label.setText("运行状态：待生成")
+            return
+
+        segments = output.segments if output.segments is not None else pd.DataFrame()
+        mode_score = self._segments_score(segments, "mode_accuracy")
+        attr_score = self._segments_score(segments, "attr_accuracy")
+        self._set_metric(self.mode_accuracy_value, self.mode_accuracy_bar, mode_score)
+        self._set_metric(self.attr_accuracy_value, self.attr_accuracy_bar, attr_score)
+        self._plot_export_timeline(self.export_mode_chart, segments, "mode", "mode_accuracy")
+        self._plot_export_timeline(self.export_attr_chart, segments, "attribute", "attr_accuracy")
+
+        task_name = os.path.basename(str(output.run_dir).rstrip(os.sep)) or "已生成"
+        radar_keys = list(output.radars.keys()) if isinstance(output.radars, dict) else []
+        selected_radar = radar_keys[0] if radar_keys else "-"
+        self.export_task_label.setText(f"任务名称：{task_name}")
+        self.export_radar_label.setText(f"选中雷达：{selected_radar}")
+        self.export_block_label.setText(f"块时长：{output.block_duration:.1f} s")
+        self.export_interval_label.setText(f"显示间隔：{output.display_interval:.1f} s")
+        self.export_change_label.setText(f"变化点方法：{output.change_method}")
+        state_text = "运行中" if getattr(output, "status", "ok") == "running" else "已完成"
+        self.export_run_state_label.setText(f"运行状态：{state_text}")
+
+        frames = output.display_frames.get("frames", []) if isinstance(output.display_frames, dict) else []
+        if frames:
+            frame = frames[0]
+            t0 = self._segment_float(frame.get("time_start"), 0.0)
+            t1 = self._segment_float(frame.get("time_end"), output.display_interval)
+            self.export_table_window_label.setText(f"当前时间范围：{t0:.3f} ~ {t1:.3f} s")
+        else:
+            self.export_table_window_label.setText("当前时间范围：-")
+
+        rows = segments.head(80)
+        self.export_segment_table.setRowCount(len(rows))
+        for r, (_, row) in enumerate(rows.iterrows()):
+            radar_key = str(row.get("radar_key", ""))
+            radar_id = radar_key.split("/")[-1] if radar_key else ""
+            values = [
+                str(int(self._segment_float(row.get("index"), r + 1))),
+                f"{self._segment_float(row.get('start_time')):.3f} ~ {self._segment_float(row.get('end_time')):.3f}",
+                f"{int(self._segment_float(row.get('n_pulses'))):,}",
+                str(row.get("mode", "未知")),
+                f"{self._segment_float(row.get('accuracy')):.2f}",
+                radar_key,
+                radar_id,
+            ]
+            for c, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignCenter)
+                self.export_segment_table.setItem(r, c, item)
+
+        radars = output.radars if isinstance(output.radars, dict) else {}
+        total_pulses = sum(int(v.get("total_pulses", 0) or 0) for v in radars.values())
+        total_windows = sum(int(v.get("total_windows", 0) or 0) for v in radars.values())
+        valid_windows = sum(int(v.get("n_valid_windows", 0) or 0) for v in radars.values())
+        empty_windows = sum(int(v.get("n_empty_windows", 0) or 0) for v in radars.values())
+        total_blocks = sum(int(v.get("n_blocks", 0) or 0) for v in radars.values())
+        dominant_modes = pd.Series([v.get("dominant_mode", "未知") for v in radars.values()])
+        dominant_mode = str(dominant_modes.mode().iloc[0]) if not dominant_modes.empty else "-"
+        dominant_attrs = pd.Series([v.get("global_func_attr", "未知") for v in radars.values()])
+        dominant_attr = str(dominant_attrs.mode().iloc[0]) if not dominant_attrs.empty else "-"
+        unknown_values = [float(v.get("unknown_ratio", 0.0) or 0.0) for v in radars.values()]
+        unknown_ratio = sum(unknown_values) / len(unknown_values) if unknown_values else 0.0
+        summary_lines = [
+            f"总脉冲数        {total_pulses:,}",
+            f"总窗口数        {total_windows:,}",
+            f"有效窗口        {valid_windows:,}",
+            f"空窗口          {empty_windows:,}",
+            f"状态段数        {len(segments):,}",
+            f"块数            {total_blocks:,}",
+            "",
+            f"主导模式        {dominant_mode}",
+            f"主导属性        {dominant_attr}",
+            f"unknown 比例    {unknown_ratio * 100:.1f}%",
+            f"平均准确率      {((mode_score + attr_score) / 2.0):.2f}",
+            "",
+            f"输出目录        {output.run_dir}",
+        ]
+        self.export_summary_text.setPlainText("\n".join(summary_lines))
+
+    def start_radar_dashboard_analysis(self):
+        if not self._ensure_data():
+            return
+        data = self.recognition_output.data.copy() if self.recognition_output is not None else self.data.copy()
+        if not any(column in data.columns for column in ("PRED_LABEL", "LABEL", "Predicted_Label")):
+            QMessageBox.information(self, "Notice", "Please import recognition results with LABEL/PRED_LABEL, or complete recognition first.")
+            return
+        output_base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".model_runs")
+        self.export_run_state_label.setText("Running")
+        self.log("Radar mode/function attribute analysis started")
+        self._run_background(
+            lambda df, out_dir, progress_callback=None, should_cancel=None, stream_callback=None: run_radar_attribute_pipeline(
+                df,
+                out_dir,
+                progress_callback=progress_callback,
+                should_cancel=should_cancel,
+                stream_callback=stream_callback,
+            ),
+            data,
+            output_base_dir,
+            done=self._on_radar_dashboard_done,
+            stages=("准备模式属性输入", "工作模式/功能属性分析运行中", "刷新结果导出页"),
+            pass_progress=True,
+            animate_progress=False,
+            stream_updates=True,
+        )
+
+    def _on_radar_dashboard_done(self, output: RadarAttributeDashboard, elapsed: float):
+        self.radar_dashboard_output = output
+        self._refresh_export_dashboard(output)
+        self._finish_status("工作模式/功能属性分析", elapsed)
+        self.log(f"工作模式/功能属性分析完成：{output.run_dir}，耗时 {format_elapsed(elapsed)}")
+
+    def _require_radar_dashboard(self) -> Optional[RadarAttributeDashboard]:
+        if self.radar_dashboard_output is not None:
+            return self.radar_dashboard_output
+        QMessageBox.information(self, "提示", "请先运行工作模式/功能属性分析。")
+        return None
+
+    def export_radar_dashboard_json(self):
+        output = self._require_radar_dashboard()
+        if output is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "导出 JSON", "radar_attribute_dashboard.json", "JSON Files (*.json)")
+        if not path:
+            return
+        payload = {
+            "status": output.status,
+            "run_dir": output.run_dir,
+            "input_file": output.input_file,
+            "block_duration": output.block_duration,
+            "display_interval": output.display_interval,
+            "change_method": output.change_method,
+            "radars": output.radars,
+            "manifest": output.manifest,
+            "summary": output.summary,
+            "display_frames": output.display_frames,
+            "segments": output.segments.to_dict("records") if output.segments is not None else [],
+            "report_path": output.report_path,
+            "error": output.error,
+        }
+        with open(path, "w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+        self.log(f"导出模式属性 JSON：{path}")
+
+    def export_radar_dashboard_csv(self):
+        output = self._require_radar_dashboard()
+        if output is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "导出 CSV", "radar_attribute_segments.csv", "CSV Files (*.csv)")
+        if not path:
+            return
+        segments = output.segments if output.segments is not None else pd.DataFrame()
+        segments.to_csv(path, index=False, encoding="utf-8-sig")
+        self.log(f"导出模式属性 CSV：{path}")
+
+    def open_radar_dashboard_dir(self):
+        output = self._require_radar_dashboard()
+        if output is None:
+            return
+        directory = output.run_dir
+        if not directory or not os.path.isdir(directory):
+            QMessageBox.information(self, "提示", "输出目录不存在。")
+            return
+        os.startfile(directory)
 
     def _bottom_panel(self):
         frame = QFrame()
@@ -580,20 +979,25 @@ class MainWindow(QMainWindow):
         self.recognition_ribbon.import_data.connect(self.import_zeng_training_data)
         for ribbon in [self.home_ribbon, self.sort_ribbon, self.recognition_ribbon, self.export_ribbon]:
             ribbon.stop_clicked.connect(self.stop_current_task)
+        for ribbon in [self.home_ribbon, self.sort_ribbon, self.recognition_ribbon]:
             ribbon.method_clicked.connect(self.show_method_selector)
             ribbon.compare_clicked.connect(self.toggle_compare)
         self.sort_ribbon.template_clicked.connect(lambda: self.import_sorting_result("hdbscan"))
         self.recognition_ribbon.sorting_result_clicked.connect(lambda: self.import_sorting_result("recognition"))
         self.recognition_ribbon.template_clicked.connect(self.import_zeng_training_data)
+        self.export_ribbon.import_data.connect(lambda: self.tabs.setCurrentWidget(self.recognition_page))
+        self.export_ribbon.import_truth.connect(lambda: self.import_recognition_result("export"))
         self.home_ribbon.run_clicked.connect(self.start_home_pipeline)
         self.sort_ribbon.run_clicked.connect(self.start_sorting)
         self.recognition_ribbon.run_clicked.connect(self.start_recognition)
-        self.export_ribbon.run_clicked.connect(self.export_report_file)
+        self.export_ribbon.run_clicked.connect(self.start_radar_dashboard_analysis)
         self.home_ribbon.export_clicked.connect(self.export_current_charts)
         self.sort_ribbon.export_clicked.connect(self.export_sorting_file)
         self.recognition_ribbon.export_clicked.connect(self.export_recognition_file)
-        self.export_ribbon.export_clicked.connect(self.export_full_result_file)
-
+        self.export_ribbon.method_clicked.connect(self.export_radar_dashboard_json)
+        self.export_ribbon.compare_clicked.connect(self.export_radar_dashboard_csv)
+        self.export_ribbon.template_clicked.connect(self.export_report_file)
+        self.export_ribbon.export_clicked.connect(self.open_radar_dashboard_dir)
         for panel in self._method_panels():
             panel.pipeline_changed.connect(self._sync_pipeline_selection)
             panel.sorting_method_changed.connect(lambda m: self.log(f"分选方法切换为：{m}"))
@@ -689,7 +1093,9 @@ class MainWindow(QMainWindow):
     def _read_table_auto(self, path: str) -> pd.DataFrame:
         ext = os.path.splitext(path)[1].lower()
         if ext == ".csv":
-            return pd.read_csv(path)
+            table = pd.read_csv(path)
+            if table.shape[1] > 1:
+                return table
         for sep in [None, ",", "\t", r"\s+"]:
             try:
                 table = pd.read_csv(path, sep=sep, engine="python")
@@ -891,6 +1297,160 @@ class MainWindow(QMainWindow):
             for stage in self.pipeline_output.stage_results:
                 stage.sorting.data = attach(stage.sorting.data)
 
+    def import_recognition_result(self, target_page: str = "export"):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择识别结果文件",
+            "",
+            "Data Files (*.csv *.txt);;All Files (*)",
+        )
+        if not path:
+            return
+        self.recognition_import_target_page = target_page
+        current_data = self.data.copy() if self.data is not None else None
+        if target_page == "export":
+            self.export_run_state_label.setText("运行状态：导入识别结果中")
+        self.log(f"识别结果导入开始：{path}")
+        self._run_background(
+            self._load_recognition_result_file,
+            path,
+            current_data,
+            done=self._on_recognition_import_done,
+            stages=("准备导入识别结果", "正在读取识别结果文件", "刷新识别视图"),
+        )
+
+    def _load_recognition_result_file(self, path: str, current_data: Optional[pd.DataFrame]) -> RecognitionOutput:
+        table = self._read_table_auto(path).copy()
+        table.columns = [str(column).strip() for column in table.columns]
+        lower_map = {str(column).strip().lower().replace(" ", "_").replace("-", "_"): column for column in table.columns}
+
+        def rename_if_present(candidates, target):
+            nonlocal lower_map
+            for candidate in candidates:
+                source = lower_map.get(candidate)
+                if source is not None and source != target:
+                    table.rename(columns={source: target}, inplace=True)
+                    lower_map = {str(column).strip().lower().replace(" ", "_").replace("-", "_"): column for column in table.columns}
+                    return
+
+        rename_if_present(["toa(s)", "toa_s", "toa"], "TOA")
+        rename_if_present(["param1", "rf"], "RF")
+        rename_if_present(["param2", "pw"], "PW")
+        rename_if_present(["param3", "dtoa", "delta_toa", "pri"], "PRI")
+        rename_if_present(["param4", "pa"], "PA")
+        rename_if_present(["param5", "doa"], "DOA")
+        rename_if_present(["param6"], "Param6")
+        rename_if_present(["param7"], "Param7")
+        rename_if_present(["pred_label", "pred_label_id"], "PRED_LABEL")
+        rename_if_present(["label"], "LABEL")
+        rename_if_present(["track_id", "trackid", "track", "mht_track_id", "display_track_id", "predicted_id"], "Track_ID")
+        rename_if_present(["predicted_label", "predict_label", "class", "class_label", "recognition_label"], "Predicted_Label")
+        rename_if_present(["confidence", "conf", "score", "probability", "prob"], "Confidence")
+        rename_if_present(["pulse_count", "n_pulses", "pulses"], "Pulse_Count")
+        rename_if_present(["mean_rf", "rf_mean"], "Mean_RF")
+        rename_if_present(["mean_pw", "pw_mean"], "Mean_PW")
+        rename_if_present(["mean_pri", "pri_mean"], "Mean_PRI")
+
+        if "PRED_LABEL" not in table.columns:
+            if "LABEL" in table.columns:
+                table["PRED_LABEL"] = pd.to_numeric(table["LABEL"], errors="coerce").fillna(0).astype(int)
+            elif "Predicted_Label" in table.columns:
+                extracted = table["Predicted_Label"].astype(str).str.extract(r"(-?\d+)", expand=False)
+                table["PRED_LABEL"] = pd.to_numeric(extracted, errors="coerce").fillna(0).astype(int)
+            else:
+                raise ValueError("Recognition import requires LABEL, Predicted_Label, or PRED_LABEL.")
+        else:
+            table["PRED_LABEL"] = pd.to_numeric(table["PRED_LABEL"], errors="coerce").fillna(0).astype(int)
+        table = table[table["PRED_LABEL"] > 0].reset_index(drop=True)
+        if table.empty:
+            raise ValueError("识别结果文件没有有效的 LABEL/PRED_LABEL")
+        if "Track_ID" not in table.columns:
+            table["Track_ID"] = table["PRED_LABEL"]
+        else:
+            table["Track_ID"] = pd.to_numeric(table["Track_ID"], errors="coerce").fillna(table["PRED_LABEL"]).astype(int)
+        if "Predicted_Label" not in table.columns:
+            table["Predicted_Label"] = table["PRED_LABEL"].astype(str)
+        if "Confidence" not in table.columns:
+            table["Confidence"] = 1.0
+        table["Predicted_Label"] = table["Predicted_Label"].astype(str)
+        table["Confidence"] = pd.to_numeric(table["Confidence"], errors="coerce").fillna(1.0).clip(0.0, 1.0)
+
+        pulse_like_columns = {"TOA", "RF", "PW", "PA", "DOA"}
+        is_pulse_level = len(pulse_like_columns.intersection(table.columns)) >= 2
+        if current_data is None:
+            if not is_pulse_level:
+                raise ValueError("轨迹级识别结果需要先导入或生成当前分选数据，才能映射到脉冲级视图")
+            data = table.copy()
+            if "Assigned" not in data.columns:
+                data["Assigned"] = data["Track_ID"] > 0
+        else:
+            data = current_data.copy()
+            data.attrs.update(current_data.attrs)
+            if is_pulse_level and len(table) == len(data):
+                data["PRED_LABEL"] = table["PRED_LABEL"].to_numpy(dtype=int)
+                data["Track_ID"] = table["Track_ID"].to_numpy(dtype=int)
+                data["Predicted_Label"] = table["Predicted_Label"].to_numpy(dtype=object)
+                data["Confidence"] = table["Confidence"].to_numpy(dtype=float)
+            else:
+                if "Track_ID" not in data.columns:
+                    raise ValueError("当前数据没有 Track_ID，无法导入轨迹级识别结果")
+                grouped = []
+                for track_id, group in table.groupby("Track_ID", sort=False):
+                    labels = group["Predicted_Label"].replace("", pd.NA).dropna()
+                    label = str(labels.astype(str).mode().iloc[0]) if not labels.empty else "Unknown"
+                    confidence = float(group["Confidence"].mean()) if "Confidence" in group else 1.0
+                    pred_labels = pd.to_numeric(group["PRED_LABEL"], errors="coerce").dropna()
+                    pred_label = int(pred_labels.mode().iloc[0]) if not pred_labels.empty else 0
+                    grouped.append((int(track_id), pred_label, label, confidence))
+                pred_map = {track_id: pred_label for track_id, pred_label, _, _ in grouped}
+                label_map = {track_id: label for track_id, _, label, _ in grouped}
+                conf_map = {track_id: confidence for track_id, _, _, confidence in grouped}
+                tracks = pd.to_numeric(data["Track_ID"], errors="coerce").fillna(0).astype(int)
+                data["PRED_LABEL"] = tracks.map(pred_map).fillna(0).astype(int)
+                data["Predicted_Label"] = tracks.map(label_map).fillna("")
+                data["Confidence"] = tracks.map(conf_map).fillna(0.0).astype(float)
+
+        track_results = self._recognition_results_from_dataframe(data)
+        if track_results is None or track_results.empty:
+            columns = ["Track_ID", "Pulse_Count", "Mean_RF", "Mean_PW", "Mean_PRI", "Predicted_Label", "Confidence"]
+            rows = []
+            for track_id, group in table.groupby("Track_ID", sort=True):
+                labels = group["Predicted_Label"].replace("", pd.NA).dropna()
+                rows.append({
+                    "Track_ID": int(track_id),
+                    "Pulse_Count": int(group["Pulse_Count"].iloc[0]) if "Pulse_Count" in group else int(len(group)),
+                    "Mean_RF": float(pd.to_numeric(group["Mean_RF"], errors="coerce").mean()) if "Mean_RF" in group else 0.0,
+                    "Mean_PW": float(pd.to_numeric(group["Mean_PW"], errors="coerce").mean()) if "Mean_PW" in group else 0.0,
+                    "Mean_PRI": float(pd.to_numeric(group["Mean_PRI"], errors="coerce").mean()) if "Mean_PRI" in group else 0.0,
+                    "Predicted_Label": str(labels.astype(str).mode().iloc[0]) if not labels.empty else "Unknown",
+                    "Confidence": float(group["Confidence"].mean()),
+                })
+            track_results = pd.DataFrame(rows, columns=columns)
+        mean_conf = float(track_results["Confidence"].mean()) if not track_results.empty else 0.0
+        class_count = int(track_results["Predicted_Label"].nunique()) if not track_results.empty else 0
+        return RecognitionOutput(
+            data=data,
+            track_results=track_results,
+            model="Imported",
+            elapsed=0.0,
+            mean_confidence=mean_conf,
+            class_count=class_count,
+            summary={"识别轨迹数": int(len(track_results)), "已识别脉冲数": int((pd.to_numeric(data.get("Confidence", pd.Series([], dtype=float)), errors="coerce").fillna(0.0) > 0).sum()), "平均置信度": mean_conf, "类别数": class_count},
+        )
+
+    def _on_recognition_import_done(self, output: RecognitionOutput, elapsed: float):
+        output.elapsed = elapsed
+        self.recognition_output = output
+        self.radar_dashboard_output = None
+        self.data = output.data
+        self._refresh_pages()
+        if getattr(self, "recognition_import_target_page", "export") == "export":
+            self.export_run_state_label.setText("运行状态：已导入识别结果")
+        else:
+            self.tabs.setCurrentWidget(self.recognition_page)
+        self._finish_status("识别结果导入", elapsed)
+        self.log(f"识别结果导入完成：轨迹数 {len(output.track_results)}，平均置信度 {output.mean_confidence * 100:.1f}%")
+
     def import_sorting_result(self, target_page: str = "sorting"):
         title = "选择HDBSCAN第一阶段结果文件" if target_page == "hdbscan" else "选择分选结果文件"
         path, _ = QFileDialog.getOpenFileName(self, title, "", "CSV/TXT Files (*.csv *.txt);;All Files (*)")
@@ -1088,8 +1648,86 @@ class MainWindow(QMainWindow):
         )
 
     def start_home_pipeline(self):
-        self.pipeline_result_target_page = "recognition"
-        self.start_pipeline()
+        if not self._ensure_data():
+            return
+        if not self._ensure_zeng_template_ready():
+            return
+        self.pipeline_result_target_page = "export"
+        self.log("主页全链路开始：200ms beat 级 HDBSCAN → cycle_period → MHT → zeng识别 → 工作模式/功能属性分析")
+        self._run_background(
+            self._run_home_full_chain,
+            self.data.copy(),
+            FULL_PIPELINE_ID,
+            done=self._on_home_full_chain_done,
+            stages=("准备全链路数据", "200ms beat级分选、识别与模式属性分析运行中", "刷新全链路结果"),
+            pass_progress=True,
+            animate_progress=False,
+            stream_updates=True,
+            stream_recognition=True,
+        )
+
+    def _scale_home_progress(self, progress_callback, start_pct: int, end_pct: int, prefix: str):
+        if progress_callback is None:
+            return None
+
+        def emit(value: int, text: str):
+            value = max(0, min(100, int(value)))
+            scaled = start_pct + int((end_pct - start_pct) * value / 100)
+            progress_callback(max(0, min(100, scaled)), f"{prefix}：{text}")
+
+        return emit
+
+    def _run_home_full_chain(self, df: pd.DataFrame, pipeline_id: str, progress_callback=None, should_cancel=None, stream_callback=None):
+        output_base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".model_runs")
+        beat_state = {"count": 0}
+
+        def run_mode_attr_for_completed_beat(partial_data):
+            if stream_callback is not None:
+                stream_callback(partial_data)
+            if not isinstance(partial_data, pd.DataFrame) or "Track_ID" not in partial_data.columns:
+                return
+            if should_cancel and should_cancel():
+                raise RuntimeError("Task cancelled")
+
+            tracks = pd.to_numeric(partial_data["Track_ID"], errors="coerce").fillna(0).astype(int)
+            completed = partial_data.loc[tracks > 0].copy()
+            if completed.empty:
+                return
+            if not any(column in completed.columns for column in ("PRED_LABEL", "LABEL", "Predicted_Label")):
+                return
+
+            beat_state["count"] += 1
+            beat_progress = min(82, 10 + beat_state["count"])
+            if progress_callback is not None:
+                progress_callback(beat_progress, "beat {}: sorting -> recognition -> mode/function attribute analysis".format(beat_state["count"]))
+            try:
+                live_output = run_radar_attribute_pipeline(completed, output_base_dir, block_duration=0.2, display_interval=0.2, progress_callback=None, should_cancel=should_cancel, stream_callback=None)
+                live_output.status = "running"
+                if stream_callback is not None:
+                    stream_callback(live_output)
+            except Exception as exc:
+                if progress_callback is not None:
+                    progress_callback(beat_progress, "beat {}: waiting for valid recognition labels ({})".format(beat_state["count"], exc))
+
+        pipeline_output = run_pipeline(
+            df,
+            pipeline_id,
+            progress_callback=self._scale_home_progress(progress_callback, 0, 82, "200ms beat sorting and recognition"),
+            should_cancel=should_cancel,
+            stream_callback=run_mode_attr_for_completed_beat,
+        )
+        if should_cancel and should_cancel():
+            raise RuntimeError("Task cancelled")
+
+        dashboard_data = pipeline_output.recognition.data.copy()
+        radar_output = run_radar_attribute_pipeline(
+            dashboard_data,
+            output_base_dir,
+            progress_callback=self._scale_home_progress(progress_callback, 83, 99, "final mode/function attribute analysis"),
+            should_cancel=should_cancel,
+            stream_callback=stream_callback,
+        )
+        return pipeline_output, radar_output
 
     def start_recognition(self):
         self.pipeline_result_target_page = "recognition"
@@ -1234,7 +1872,11 @@ class MainWindow(QMainWindow):
         self.progress.setValue(max(self.progress.value(), value))
         self.step_label.setText(f"当前操作：{text}")
 
-    def _on_worker_partial_sorting(self, data: pd.DataFrame):
+    def _on_worker_partial_sorting(self, data):
+        if isinstance(data, RadarAttributeDashboard):
+            self.radar_dashboard_output = data
+            self._refresh_export_dashboard(data)
+            return
         if data is None or data.empty:
             return
         self.pending_partial_sorting_data = data
@@ -1275,13 +1917,9 @@ class MainWindow(QMainWindow):
                     }
                 )
             self.recognition_page.method_panel.update_summary(recognition_summary)
-            if self.stream_recognition_enabled and first_partial:
-                self.tabs.setCurrentWidget(self.recognition_page)
         else:
             self.sort_page.set_data(data)
             self.sort_page.method_panel.update_summary(self._summary_for_dataframe(data))
-            if first_partial:
-                self.tabs.setCurrentWidget(self.sort_page)
 
     def _clear_partial_sorting_update(self):
         if hasattr(self, "partial_sorting_timer"):
@@ -1299,6 +1937,25 @@ class MainWindow(QMainWindow):
             self.progress.setValue(min(55, value + 2))
         elif value < self.task_progress_cap:
             self.progress.setValue(value + 1)
+
+    def _on_home_full_chain_done(self, output, elapsed: float):
+        self._clear_partial_sorting_update()
+        pipeline_output, radar_output = output
+        self.pipeline_output = pipeline_output
+        self.sorting_pipeline_output = None
+        self.sorting_output = pipeline_output.sorting
+        self.recognition_output = pipeline_output.recognition
+        self.radar_dashboard_output = radar_output
+        self.data = pipeline_output.recognition.data
+        self._autosave_sorting_results(pipeline_output.sorting, pipeline_output.stage_results)
+        self._refresh_pages()
+        self._refresh_export_dashboard(radar_output)
+        self._finish_status("主页全链路分析", elapsed)
+        self.log(
+            f"主页全链路完成：200ms beat级 HDBSCAN → cycle_period → MHT → zeng识别 → 工作模式/功能属性分析，"
+            f"轨迹数 {pipeline_output.sorting.track_count}，模式属性输出 {radar_output.run_dir}，"
+            f"耗时 {format_elapsed(elapsed)}"
+        )
 
     def _on_pipeline_done(self, output: PipelineRunResult, elapsed: float):
         self._clear_partial_sorting_update()

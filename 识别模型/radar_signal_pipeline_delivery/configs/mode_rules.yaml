@@ -1,0 +1,288 @@
+# 工作模式规则知识库 (v3 — 扩充覆盖 + 软打分)
+#
+# 设计原则:
+#   1. 每种模式有多条独立规则路径 (冗余度)
+#   2. 不依赖 beam_mode 作为唯一判据
+#   3. 增加基于 PRI 模式的规则
+#   4. HPRF+narrow+agile 组合有明确支持
+#   5. 阈值适度放宽，提升覆盖率
+
+work_modes:
+  搜索:
+    description: "雷达处于搜索状态，波束扫描空域"
+    positive:
+      # PA周期性扫描 (核心特征，多级梯度)
+      - feature: pa_periodicity
+        op: ">"
+        value: 0.30
+        weight: 0.40
+        evidence: "PA强周期性扫描"
+      - feature: pa_periodicity
+        op: ">"
+        value: 0.15
+        weight: 0.25
+        evidence: "PA弱周期性"
+      - feature: pa_periodicity
+        op: ">"
+        value: 0.08
+        weight: 0.10
+        evidence: "PA微弱周期性"
+      - feature: pa_periodicity_level
+        equals: "weak"
+        weight: 0.08
+        evidence: "PA弱周期(辅助)"
+      # 重频等级 (搜索典型: LPRF/MPRF)
+      - feature: pri_level
+        in: ["LPRF", "VLPRF"]
+        weight: 0.35
+        evidence: "低/甚低重频"
+      - feature: pri_level
+        equals: "MPRF"
+        weight: 0.15
+        evidence: "中重频"
+      # 脉宽
+      - feature: pw_type
+        in: ["medium", "wide"]
+        weight: 0.12
+        evidence: "中/宽脉冲"
+      # 信号强度 (大功率搜索)
+      - feature: signal_strength
+        equals: "strong"
+        weight: 0.25
+        evidence: "强信号(大功率)"
+      # 波束扫描
+      - feature: beam_mode
+        equals: "扫描"
+        weight: 0.20
+        evidence: "波束扫描"
+      # PRI模式: 参差/滑变是搜索特征
+      - feature: pri_mode
+        starts_with: "参差"
+        weight: 0.20
+        evidence: "参差PRI(搜索特征)"
+      - feature: pri_mode
+        equals: "滑变"
+        weight: 0.15
+        evidence: "滑变PRI(搜索特征)"
+      # DOA覆盖范围大
+      - feature: doa_range_deg
+        op: ">"
+        value: 10.0
+        weight: 0.10
+        evidence: "DOA覆盖范围宽"
+      # 非极高密度支持搜索
+      - feature: pulse_density_level
+        in: ["normal", "high"]
+        weight: 0.05
+        evidence: "非极高密度"
+    negative:
+      # 高密度反对搜索
+      - feature: pulse_density_level
+        equals: "very_high"
+        weight: -0.15
+        evidence: "极高脉冲密度"
+      # HPRF反对搜索
+      - feature: pri_level
+        equals: "HPRF"
+        weight: -0.20
+        evidence: "高重频(更可能是制导)"
+      # PA高度稳定反对搜索
+      - feature: pa_stability
+        equals: "high"
+        weight: -0.10
+        evidence: "PA高度稳定(非搜索)"
+
+  跟踪:
+    description: "雷达处于跟踪状态，波束持续指向目标"
+    positive:
+      # PA稳定 (核心特征)
+      - feature: pa_stability
+        equals: "high"
+        weight: 0.30
+        evidence: "PA高度稳定"
+      - feature: pa_stability
+        equals: "medium"
+        weight: 0.20
+        evidence: "PA较稳定"
+      # 凝视/驻留
+      - feature: beam_mode
+        equals: "凝视"
+        weight: 0.25
+        evidence: "波束凝视/驻留"
+      # 脉宽 (窄脉冲跟踪典型)
+      - feature: pw_type
+        equals: "narrow"
+        weight: 0.20
+        evidence: "窄脉冲"
+      # 信号强度
+      - feature: signal_strength
+        equals: "weak"
+        weight: 0.20
+        evidence: "弱信号(小功率)"
+      # MPRF + 窄脉冲 (跟踪典型组合)
+      - feature: pri_level
+        equals: "MPRF"
+        weight: 0.15
+        evidence: "中重频"
+        require_all:
+          - feature: pw_type
+            equals: "narrow"
+      # PRI固定模式 (跟踪特征)
+      - feature: pri_mode
+        equals: "固定"
+        weight: 0.15
+        evidence: "固定PRI(跟踪特征)"
+      # 非极高密度支持跟踪
+      - feature: pulse_density_level
+        in: ["normal", "high"]
+        weight: 0.10
+        evidence: "中等脉冲密度"
+      # DOA范围小 (指向性)
+      - feature: doa_range_deg
+        op: "<"
+        value: 10.0
+        weight: 0.10
+        evidence: "DOA范围小(指向性)"
+    negative:
+      # 极高密度反对跟踪
+      - feature: pulse_density_level
+        equals: "very_high"
+        weight: -0.15
+        evidence: "极高脉冲密度(更可能是制导)"
+      # PA周期性反对跟踪
+      - feature: pa_periodicity
+        op: ">"
+        value: 0.25
+        weight: -0.15
+        evidence: "PA周期性(扫描非跟踪)"
+
+  成像:
+    description: "雷达处于成像模式(SAR/ISAR)"
+    positive:
+      # 超宽脉冲是成像的强特征
+      - feature: pw_type
+        equals: "ultra_wide"
+        weight: 0.50
+        evidence: "超宽脉冲(SAR高分辨)"
+      # 宽脉冲 + RF跳频
+      - feature: pw_type
+        equals: "wide"
+        weight: 0.30
+        evidence: "宽脉冲"
+        require_all:
+          - feature: rf_mode
+            in: ["agile", "hopping"]
+      # MPRF + 超宽脉冲组合 (SAR典型)
+      - feature: pri_level
+        equals: "MPRF"
+        weight: 0.20
+        evidence: "中重频(SAR典型)"
+        require_all:
+          - feature: pw_type
+            in: ["wide", "ultra_wide"]
+    negative:
+      # HPRF反对成像
+      - feature: pri_level
+        equals: "HPRF"
+        weight: -0.25
+        evidence: "高重频(更可能是制导)"
+      # 窄脉冲强烈反对成像
+      - feature: pw_type
+        equals: "narrow"
+        weight: -0.30
+        evidence: "窄脉冲(非SAR特征)"
+      # 中脉冲反对成像
+      - feature: pw_type
+        equals: "medium"
+        weight: -0.15
+        evidence: "中脉冲(非典型SAR)"
+
+  制导:
+    description: "雷达处于制导状态，引导导弹/武器"
+    positive:
+      # HPRF是制导的强特征
+      - feature: pri_level
+        equals: "HPRF"
+        weight: 0.30
+        evidence: "高重频"
+      # 高脉冲密度
+      - feature: pulse_density_level
+        in: ["high", "very_high"]
+        weight: 0.25
+        evidence: "高/极高脉冲密度"
+      # 窄脉冲
+      - feature: pw_type
+        equals: "narrow"
+        weight: 0.15
+        evidence: "窄脉冲"
+      # PA稳定
+      - feature: pa_stability
+        equals: "high"
+        weight: 0.20
+        evidence: "PA高度稳定"
+      # 凝视
+      - feature: beam_mode
+        equals: "凝视"
+        weight: 0.15
+        evidence: "波束凝视"
+      # HPRF + 窄脉冲 + RF捷变 (制导典型组合)
+      - feature: pri_level
+        equals: "HPRF"
+        weight: 0.15
+        evidence: "HPRF+窄脉组合"
+        require_all:
+          - feature: pw_type
+            equals: "narrow"
+      # 固定PRI (制导特征)
+      - feature: pri_mode
+        equals: "固定"
+        weight: 0.10
+        evidence: "固定PRI(制导特征)"
+      # RF固定支持制导
+      - feature: rf_mode
+        equals: "fixed"
+        weight: 0.10
+        evidence: "RF固定(制导特征)"
+      # 非扫描支持制导
+      - feature: beam_mode
+        equals: "不确定"
+        weight: 0.05
+        evidence: "非扫描(辅助)"
+        require_all:
+          - feature: pri_level
+            equals: "HPRF"
+    negative:
+      # 非HPRF反对制导
+      - feature: pri_level
+        in: ["LPRF", "VLPRF"]
+        weight: -0.20
+        evidence: "低重频(非制导)"
+      # PA周期性反对制导
+      - feature: pa_periodicity
+        op: ">"
+        value: 0.25
+        weight: -0.15
+        evidence: "PA周期性(扫描非制导)"
+      # 宽脉冲反对制导
+      - feature: pw_type
+        in: ["wide", "ultra_wide"]
+        weight: -0.15
+        evidence: "宽脉冲(非制导)"
+
+# 决策阈值 (降低以提升覆盖率)
+decision:
+  accept_threshold: 0.45       # 从0.55降到0.45 (6类softmax分散)
+  reject_threshold: 0.25       # 从0.35降到0.25
+  margin_threshold: 0.08       # 从0.15降到0.08
+
+# RF辅助修正
+rf_adjustments:
+  - condition: {rf_mode: ["agile", "hopping"], mode: "搜索"}
+    adjustment: +0.05
+    reason: "RF捷变增强搜索置信度"
+  - condition: {rf_mode: "fixed", mode: "制导"}
+    adjustment: +0.05
+    reason: "RF固定增强制导置信度"
+  - condition: {rf_mode: "fixed", mode: "跟踪"}
+    adjustment: +0.03
+    reason: "RF固定增强跟踪置信度"
