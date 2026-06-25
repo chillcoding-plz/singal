@@ -1680,8 +1680,10 @@ class MainWindow(QMainWindow):
     def _run_home_full_chain(self, df: pd.DataFrame, pipeline_id: str, progress_callback=None, should_cancel=None, stream_callback=None):
         output_base_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".model_runs")
         beat_state = {"count": 0}
+        last_radar_output = None
 
         def run_mode_attr_for_completed_beat(partial_data):
+            nonlocal last_radar_output
             if stream_callback is not None:
                 stream_callback(partial_data)
             if not isinstance(partial_data, pd.DataFrame) or "Track_ID" not in partial_data.columns:
@@ -1701,8 +1703,9 @@ class MainWindow(QMainWindow):
             if progress_callback is not None:
                 progress_callback(beat_progress, "beat {}: sorting -> recognition -> mode/function attribute analysis".format(beat_state["count"]))
             try:
-                live_output = run_radar_attribute_pipeline(completed, output_base_dir, block_duration=0.2, display_interval=0.2, progress_callback=None, should_cancel=should_cancel, stream_callback=None)
+                live_output = run_radar_attribute_pipeline(completed, output_base_dir, block_duration=5, display_interval=30, progress_callback=None, should_cancel=should_cancel, stream_callback=None)
                 live_output.status = "running"
+                last_radar_output = live_output
                 if stream_callback is not None:
                     stream_callback(live_output)
             except Exception as exc:
@@ -1719,15 +1722,7 @@ class MainWindow(QMainWindow):
         if should_cancel and should_cancel():
             raise RuntimeError("Task cancelled")
 
-        dashboard_data = pipeline_output.recognition.data.copy()
-        radar_output = run_radar_attribute_pipeline(
-            dashboard_data,
-            output_base_dir,
-            progress_callback=self._scale_home_progress(progress_callback, 83, 99, "final mode/function attribute analysis"),
-            should_cancel=should_cancel,
-            stream_callback=stream_callback,
-        )
-        return pipeline_output, radar_output
+        return pipeline_output, last_radar_output
 
     def start_recognition(self):
         self.pipeline_result_target_page = "recognition"
@@ -1949,11 +1944,12 @@ class MainWindow(QMainWindow):
         self.data = pipeline_output.recognition.data
         self._autosave_sorting_results(pipeline_output.sorting, pipeline_output.stage_results)
         self._refresh_pages()
-        self._refresh_export_dashboard(radar_output)
+        if radar_output is not None:
+            self._refresh_export_dashboard(radar_output)
         self._finish_status("主页全链路分析", elapsed)
         self.log(
             f"主页全链路完成：200ms beat级 HDBSCAN → cycle_period → MHT → zeng识别 → 工作模式/功能属性分析，"
-            f"轨迹数 {pipeline_output.sorting.track_count}，模式属性输出 {radar_output.run_dir}，"
+            f"轨迹数 {pipeline_output.sorting.track_count}，"
             f"耗时 {format_elapsed(elapsed)}"
         )
 
