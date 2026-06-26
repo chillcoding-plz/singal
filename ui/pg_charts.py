@@ -63,6 +63,24 @@ def _track_counts(df: Optional[pd.DataFrame], visibility=None) -> pd.Series:
     return tracks.value_counts().sort_values(ascending=False)
 
 
+def _class_counts(data: Optional[pd.DataFrame]) -> pd.Series:
+    if data is None or data.empty or "Predicted_Label" not in data:
+        return pd.Series(dtype=int)
+    return data["Predicted_Label"].replace("", pd.NA).dropna().astype(str).value_counts()
+
+
+def _class_color_map(label_order, present_labels) -> Dict[str, str]:
+    ordered = [str(label) for label in (label_order or [])]
+    present = [str(label) for label in present_labels]
+    for label in present:
+        if label not in ordered:
+            ordered.append(label)
+    return {
+        label: TRACK_COLORS[index % len(TRACK_COLORS)]
+        for index, label in enumerate(ordered)
+    }
+
+
 def _build_scatter_brushes(data: pd.DataFrame):
     """从 DataFrame 逐行构建 RGBA 颜色列表"""
     track_column = _track_column(data)
@@ -420,11 +438,16 @@ def plot_feature_projection(card: PgChartCard, data: pd.DataFrame, options: Dict
         card.show_empty()
         return
 
-    labels = work.get("Predicted_Label", pd.Series(["未知"] * len(work), index=work.index)).fillna("未知")
-    unique_labels = sorted(labels.unique())
-    render_key = f"featproj_{x_column}_{y_column}_{_state_hash(options, visibility)}"
+    labels = work.get("Predicted_Label", pd.Series(["Unknown"] * len(work), index=work.index)).fillna("Unknown").astype(str)
+    present_labels = _class_counts(work).index.tolist() or labels.value_counts().index.tolist()
+    label_order = getattr(card, "_class_color_order", None) or present_labels
+    color_map = _class_color_map(label_order, present_labels)
+    unique_labels = [label for label in color_map if label in set(labels)]
+    label_key = tuple(unique_labels)
+    render_key = f"featproj_{x_column}_{y_column}_{label_key}_{_state_hash(options, visibility)}"
+    show_legend = options.get("显示图例", True)
 
-    if card._render_key == render_key:
+    if card._render_key == render_key and len(card._render_items.get("scatters", [])) == len(unique_labels):
         scatter_items = card._render_items.get("scatters", [])
         for idx, label in enumerate(unique_labels):
             group = work[labels == label]
@@ -437,11 +460,11 @@ def plot_feature_projection(card: PgChartCard, data: pd.DataFrame, options: Dict
         scatter_items = []
         for idx, label in enumerate(unique_labels):
             group = work[labels == label]
-            legend_label = "未知" if str(label).lower() == "unknown" else str(label)
+            color = color_map[label]
             scatter = pg.ScatterPlotItem(
                 x=group[x_column].values, y=group[y_column].values,
-                size=7, brush=_hex_to_rgba(TRACK_COLORS[idx % len(TRACK_COLORS)]),
-                pen=None, name=legend_label,
+                size=7, brush=_hex_to_rgba(color),
+                pen=None,
             )
             card._plot_item.addItem(scatter)
             scatter_items.append(scatter)
@@ -450,7 +473,12 @@ def plot_feature_projection(card: PgChartCard, data: pd.DataFrame, options: Dict
         card._plot_item.setLabel("bottom", x_column)
         card._plot_item.setLabel("left", y_column)
 
-    card.finish(options.get("显示网格", True), options.get("显示图例", True))
+    legend_items = [
+        (label, color_map[label])
+        for label in unique_labels
+    ]
+    card.set_bottom_legend(legend_items if show_legend else [])
+    card.finish(options.get("显示网格", True), False)
 
 
 # ---- 置信度 ----
@@ -869,12 +897,15 @@ def render_full_detail_pg(
                 x_col, y_col = "Mean_RF", "Mean_PRI"
             else:
                 return
-            labels = full_data.get("Predicted_Label", pd.Series(["未知"] * len(full_data), index=full_data.index)).fillna("未知")
-            for idx, label in enumerate(sorted(labels.unique())):
+            labels = full_data.get("Predicted_Label", pd.Series(["Unknown"] * len(full_data), index=full_data.index)).fillna("Unknown").astype(str)
+            present_labels = _class_counts(full_data).index.tolist() or labels.value_counts().index.tolist()
+            label_order = _class_counts(track_results).index.tolist() or present_labels
+            color_map = _class_color_map(label_order, present_labels)
+            for label in [label for label in color_map if label in set(labels)]:
                 group = full_data[labels == label]
                 plot_item.addItem(pg.ScatterPlotItem(
                     x=group[x_col].values, y=group[y_col].values,
-                    size=4, brush=_hex_to_rgba(TRACK_COLORS[idx % len(TRACK_COLORS)]),
+                    size=4, brush=_hex_to_rgba(color_map[label]),
                     pen=None, name=str(label),
                 ))
             plot_item.setLabel("bottom", x_col)
