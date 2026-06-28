@@ -42,8 +42,10 @@ def _read_table(path: str) -> pd.DataFrame:
     if ext == ".csv":
         return pd.read_csv(path)
 
-    # txt/dat files are commonly comma, tab, or whitespace separated. Try robustly.
-    for sep in [None, ",", "\t", r"\s+"]:
+    # The bundled PDW txt files are aligned with variable-width spaces.
+    # Pandas' delimiter sniffer can misread them as many single-space columns,
+    # so prefer explicit whitespace parsing before trying other separators.
+    for sep in [r"\s+", ",", "\t", None]:
         try:
             df = pd.read_csv(path, sep=sep, engine="python")
             if df.shape[1] > 1:

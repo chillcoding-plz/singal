@@ -414,7 +414,7 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(self._refresh_current_tab)
         layout.addWidget(self.tabs, 1)
 
-        self.home_ribbon = RibbonBar("开始运行", "方法选择", "导出图表")
+        self.home_ribbon = RibbonBar("启动一键分选识别", "方法选择", "导出图表")
         self.sort_ribbon = RibbonBar("开始分析", "方法选择", "导出结果")
         self.recognition_ribbon = RibbonBar("开始识别", "模型选择", "导出结果")
         self.export_ribbon = RibbonBar("生成报告", "导出设置", "导出结果")
@@ -487,9 +487,9 @@ class MainWindow(QMainWindow):
         self.export_page = self._export_page()
 
         self.tabs.addTab(self.home_page, "主页")
-        self.tabs.addTab(self.sort_page, "分选分析")
+        self.tabs.addTab(self.sort_page, "信号分选")
         self.tabs.addTab(self.recognition_page, "信号识别")
-        self.tabs.addTab(self.export_page, "结果导出")
+        self.tabs.addTab(self.export_page, "功能属性与工作模式识别")
 
         layout.addWidget(self._bottom_panel())
         self._status_bar()
