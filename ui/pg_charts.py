@@ -63,6 +63,24 @@ def _track_counts(df: Optional[pd.DataFrame], visibility=None) -> pd.Series:
     return tracks.value_counts().sort_values(ascending=False)
 
 
+def _class_counts(data: Optional[pd.DataFrame]) -> pd.Series:
+    if data is None or data.empty or "Predicted_Label" not in data:
+        return pd.Series(dtype=int)
+    return data["Predicted_Label"].replace("", pd.NA).dropna().astype(str).value_counts()
+
+
+def _class_color_map(label_order, present_labels) -> Dict[str, str]:
+    ordered = [str(label) for label in (label_order or [])]
+    present = [str(label) for label in present_labels]
+    for label in present:
+        if label not in ordered:
+            ordered.append(label)
+    return {
+        label: TRACK_COLORS[index % len(TRACK_COLORS)]
+        for index, label in enumerate(ordered)
+    }
+
+
 def _build_scatter_brushes(data: pd.DataFrame):
     """从 DataFrame 逐行构建 RGBA 颜色列表"""
     track_column = _track_column(data)
@@ -243,6 +261,8 @@ def _plot_track_scatter_pg(
     show_legend: bool,
 ):
     """全量散点绘制到裸 plot_item（用于 PgInteractiveDialog，不走卡片缓存）"""
+    if data is None or data.empty or x_column not in data or y_column not in data:
+        return
     track_column = _track_column(data)
     if track_column not in data:
         scatter = pg.ScatterPlotItem(
@@ -252,12 +272,17 @@ def _plot_track_scatter_pg(
         plot_item.addItem(scatter)
     else:
         tracks = pd.to_numeric(data[track_column], errors="coerce").fillna(0).astype(int)
-        brushes = [_hex_to_rgba(track_color(int(t))) for t in tracks]
-        scatter = pg.ScatterPlotItem(
-            x=data[x_column].values, y=data[y_column].values,
-            size=6, brush=brushes, pen=None,
-        )
-        plot_item.addItem(scatter)
+        counts = tracks.value_counts()
+        for track_id in counts.index:
+            track_id = int(track_id)
+            group = data.loc[tracks == track_id]
+            plot_item.addItem(pg.ScatterPlotItem(
+                x=group[x_column].values,
+                y=group[y_column].values,
+                size=5,
+                brush=_hex_to_rgba(track_color(track_id)),
+                pen=None,
+            ))
 
     if show_legend:
         legend_tracks = pd.Series(tracks).value_counts().head(8).index.tolist() if track_column in data else []
@@ -367,6 +392,35 @@ def plot_timeline(card: PgChartCard, df: pd.DataFrame, options: Dict[str, bool],
     card.finish(options.get("显示网格", True), False)
 
 
+def _plot_full_timeline_pg(plot_item: pg.PlotItem, data: pd.DataFrame):
+    if data is None or data.empty or "TOA" not in data:
+        return
+    toa = pd.to_numeric(data["TOA"], errors="coerce")
+    if "PA" in data:
+        values = pd.to_numeric(data["PA"], errors="coerce")
+        y_label = "归一化幅度"
+    else:
+        values = pd.Series(np.ones(len(data), dtype=float), index=data.index)
+        y_label = "脉冲"
+    work = pd.DataFrame({"TOA": toa, "value": values}).dropna()
+    if work.empty:
+        return
+    y = work["value"].to_numpy(dtype=float)
+    y_min, y_max = np.nanmin(y), np.nanmax(y)
+    if np.isfinite(y_min) and np.isfinite(y_max) and y_max > y_min:
+        y = (y - y_min) / (y_max - y_min)
+    else:
+        y = np.ones(len(work), dtype=float)
+    x = work["TOA"].to_numpy(dtype=float)
+    plot_item.addItem(pg.PlotDataItem(
+        x,
+        y,
+        pen=pg.mkPen(color=(0, 82, 181, 175), width=1.0),
+    ))
+    plot_item.setLabel("bottom", "TOA")
+    plot_item.setLabel("left", y_label)
+
+
 # ---- 特征投影 ----
 
 
@@ -384,11 +438,16 @@ def plot_feature_projection(card: PgChartCard, data: pd.DataFrame, options: Dict
         card.show_empty()
         return
 
-    labels = work.get("Predicted_Label", pd.Series(["未知"] * len(work), index=work.index)).fillna("未知")
-    unique_labels = sorted(labels.unique())
-    render_key = f"featproj_{x_column}_{y_column}_{_state_hash(options, visibility)}"
+    labels = work.get("Predicted_Label", pd.Series(["Unknown"] * len(work), index=work.index)).fillna("Unknown").astype(str)
+    present_labels = _class_counts(work).index.tolist() or labels.value_counts().index.tolist()
+    label_order = getattr(card, "_class_color_order", None) or present_labels
+    color_map = _class_color_map(label_order, present_labels)
+    unique_labels = [label for label in color_map if label in set(labels)]
+    label_key = tuple(unique_labels)
+    render_key = f"featproj_{x_column}_{y_column}_{label_key}_{_state_hash(options, visibility)}"
+    show_legend = options.get("显示图例", True)
 
-    if card._render_key == render_key:
+    if card._render_key == render_key and len(card._render_items.get("scatters", [])) == len(unique_labels):
         scatter_items = card._render_items.get("scatters", [])
         for idx, label in enumerate(unique_labels):
             group = work[labels == label]
@@ -401,11 +460,11 @@ def plot_feature_projection(card: PgChartCard, data: pd.DataFrame, options: Dict
         scatter_items = []
         for idx, label in enumerate(unique_labels):
             group = work[labels == label]
-            legend_label = "未知" if str(label).lower() == "unknown" else str(label)
+            color = color_map[label]
             scatter = pg.ScatterPlotItem(
                 x=group[x_column].values, y=group[y_column].values,
-                size=7, brush=_hex_to_rgba(TRACK_COLORS[idx % len(TRACK_COLORS)]),
-                pen=None, name=legend_label,
+                size=7, brush=_hex_to_rgba(color),
+                pen=None,
             )
             card._plot_item.addItem(scatter)
             scatter_items.append(scatter)
@@ -414,7 +473,12 @@ def plot_feature_projection(card: PgChartCard, data: pd.DataFrame, options: Dict
         card._plot_item.setLabel("bottom", x_column)
         card._plot_item.setLabel("left", y_column)
 
-    card.finish(options.get("显示网格", True), options.get("显示图例", True))
+    legend_items = [
+        (label, color_map[label])
+        for label in unique_labels
+    ]
+    card.set_bottom_legend(legend_items if show_legend else [])
+    card.finish(options.get("显示网格", True), False)
 
 
 # ---- 置信度 ----
@@ -567,6 +631,69 @@ def plot_class_stats(card: PgChartCard, data: pd.DataFrame, options: Dict[str, b
     card.finish(options.get("显示网格", True), False)
 
 
+def _plot_full_probability_pg(plot_item: pg.PlotItem, data: pd.DataFrame, visibility=None):
+    if data is None or data.empty or "Confidence" not in data:
+        return
+    full_data = _visible(data, visibility or {})
+    if full_data is None or full_data.empty:
+        return
+    confidence = pd.to_numeric(full_data["Confidence"], errors="coerce").fillna(0.0).clip(0, 1)
+    if "TOA" in full_data:
+        x = pd.to_numeric(full_data["TOA"], errors="coerce")
+        work = pd.DataFrame({"x": x, "confidence": confidence}).dropna()
+        if work.empty:
+            return
+        plot_item.addItem(pg.ScatterPlotItem(
+            x=work["x"].to_numpy(dtype=float),
+            y=work["confidence"].to_numpy(dtype=float),
+            size=5,
+            brush=_hex_to_rgba("#1E88E5"),
+            pen=None,
+        ))
+        plot_item.setLabel("bottom", "TOA")
+    else:
+        if "Track_ID" in full_data:
+            labels = [f"T{int(t)}" for t in pd.to_numeric(full_data["Track_ID"], errors="coerce").fillna(0)]
+        else:
+            labels = [str(index + 1) for index in range(len(full_data))]
+        x = np.arange(len(labels), dtype=float)
+        plot_item.addItem(pg.BarGraphItem(
+            x=x,
+            height=np.ones(len(labels), dtype=float),
+            width=0.6,
+            brush=(215, 227, 240, 180),
+        ))
+        plot_item.addItem(pg.BarGraphItem(
+            x=x,
+            height=confidence.to_numpy(dtype=float),
+            width=0.6,
+            brush=_hex_to_rgba("#1E88E5"),
+        ))
+        plot_item.getAxis("bottom").setTicks([list(zip(x, labels))])
+    plot_item.setLabel("left", "置信度")
+    plot_item.setYRange(0, 1)
+
+
+def _plot_full_class_stats_pg(plot_item: pg.PlotItem, data: pd.DataFrame):
+    if data is None or data.empty or "Predicted_Label" not in data:
+        return
+    counts = data["Predicted_Label"].replace("", pd.NA).dropna().value_counts()
+    if counts.empty:
+        return
+    labels = counts.index.astype(str).tolist()
+    x = np.arange(len(labels), dtype=float)
+    heights = counts.to_numpy(dtype=float)
+    brushes = [_hex_to_rgba(TRACK_COLORS[i % len(TRACK_COLORS)], alpha=220) for i in range(len(labels))]
+    plot_item.addItem(pg.BarGraphItem(x=x, height=heights, width=0.6, brushes=brushes))
+    for i, h in enumerate(heights):
+        txt = pg.TextItem(str(int(h)), color=(51, 65, 85), anchor=(0.5, 0))
+        txt.setFont(_CN_FONT_SMALL)
+        txt.setPos(x[i], h)
+        plot_item.addItem(txt)
+    plot_item.getAxis("bottom").setTicks([list(zip(x, labels))])
+    plot_item.setLabel("left", "轨迹数")
+
+
 def _truth_column(df: pd.DataFrame) -> Optional[str]:
     for column in ("Original_Track_ID", "True_Track_ID"):
         if column in df.columns:
@@ -680,25 +807,31 @@ def render_full_detail_pg(
 ):
     """在给定 plot_item 上渲染全量数据（用于 PgInteractiveDialog）"""
     visibility = visibility or {}
+    full_data = _visible(data, visibility) if data is not None else None
+
+    if plotter is plot_timeline:
+        if full_data is not None:
+            _plot_full_timeline_pg(plot_item, full_data)
+        return
 
     if plotter is plot_sort_scatter:
-        if data is not None:
-            _plot_track_scatter_pg(plot_item, data, "TOA", "PRI", "PRI", True)
+        if full_data is not None:
+            _plot_track_scatter_pg(plot_item, full_data, "TOA", "PRI", "PRI", True)
         return
 
     if plotter is plot_rf_scatter:
-        if data is not None:
-            _plot_track_scatter_pg(plot_item, data, "TOA", "RF", "RF", True)
+        if full_data is not None:
+            _plot_track_scatter_pg(plot_item, full_data, "TOA", "RF", "RF", True)
         return
 
     if plotter is plot_pw_scatter:
-        if data is not None and "PW" in data:
-            _plot_track_scatter_pg(plot_item, data, "TOA", "PW", "PW", True)
+        if full_data is not None and "PW" in full_data:
+            _plot_track_scatter_pg(plot_item, full_data, "TOA", "PW", "PW", True)
         return
 
     if plotter is plot_pa_scatter:
-        if data is not None and "PA" in data:
-            _plot_track_scatter_pg(plot_item, data, "TOA", "PA", "PA", True)
+        if full_data is not None and "PA" in full_data:
+            _plot_track_scatter_pg(plot_item, full_data, "TOA", "PA", "PA", True)
         return
 
     if plotter is plot_track_bars:
@@ -748,20 +881,31 @@ def render_full_detail_pg(
             plot_item.setLabel("left", "脉冲数")
         return
 
+    if plotter is plot_probability:
+        _plot_full_probability_pg(plot_item, data, visibility)
+        return
+
+    if plotter is plot_class_stats:
+        _plot_full_class_stats_pg(plot_item, data)
+        return
+
     if plotter is plot_feature_projection:
-        if data is not None:
-            if {"RF", "PRI"}.issubset(data.columns):
+        if full_data is not None:
+            if {"RF", "PRI"}.issubset(full_data.columns):
                 x_col, y_col = "RF", "PRI"
-            elif {"Mean_RF", "Mean_PRI"}.issubset(data.columns):
+            elif {"Mean_RF", "Mean_PRI"}.issubset(full_data.columns):
                 x_col, y_col = "Mean_RF", "Mean_PRI"
             else:
                 return
-            labels = data.get("Predicted_Label", pd.Series(["未知"] * len(data), index=data.index)).fillna("未知")
-            for idx, label in enumerate(sorted(labels.unique())):
-                group = data[labels == label]
+            labels = full_data.get("Predicted_Label", pd.Series(["Unknown"] * len(full_data), index=full_data.index)).fillna("Unknown").astype(str)
+            present_labels = _class_counts(full_data).index.tolist() or labels.value_counts().index.tolist()
+            label_order = _class_counts(track_results).index.tolist() or present_labels
+            color_map = _class_color_map(label_order, present_labels)
+            for label in [label for label in color_map if label in set(labels)]:
+                group = full_data[labels == label]
                 plot_item.addItem(pg.ScatterPlotItem(
                     x=group[x_col].values, y=group[y_col].values,
-                    size=4, brush=_hex_to_rgba(TRACK_COLORS[idx % len(TRACK_COLORS)]),
+                    size=4, brush=_hex_to_rgba(color_map[label]),
                     pen=None, name=str(label),
                 ))
             plot_item.setLabel("bottom", x_col)

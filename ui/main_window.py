@@ -345,6 +345,19 @@ class AnalysisPage(QWidget):
             return
         card, plotter = self.chart_cards[self._refresh_index]
         self._refresh_index += 1
+        if plotter is plot_feature_projection and self.track_results is not None and "Predicted_Label" in self.track_results:
+            class_order = (
+                self.track_results["Predicted_Label"]
+                .replace("", pd.NA)
+                .dropna()
+                .astype(str)
+                .value_counts()
+                .index
+                .tolist()
+            )
+            setattr(card, "_class_color_order", class_order)
+        elif hasattr(card, "_class_color_order"):
+            delattr(card, "_class_color_order")
         plot_data = self.track_results if plotter is plot_class_stats and self.track_results is not None else self.data
         plotter(card, plot_data, self._refresh_options, self.track_visibility)
         card.set_detail_renderer(
