@@ -1,11 +1,13 @@
 import json
 import os
+import shutil
 import time
 from datetime import datetime
 from typing import Callable, Dict, Optional
 
 import pandas as pd
 import pyqtgraph as pg
+import pyqtgraph.exporters
 from PyQt5.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication,
@@ -398,6 +400,7 @@ class MainWindow(QMainWindow):
         self.sorting_output: Optional[SortingOutput] = None
         self.sorting_pipeline_output: Optional[SortingPipelineResult] = None
         self.recognition_output: Optional[RecognitionOutput] = None
+        self.radar_dashboard_output: Optional[RadarAttributeDashboard] = None
         self.pipeline_output: Optional[PipelineRunResult] = None
         self.pipeline_result_target_page = "recognition"
         self.sorting_import_target_page = "sorting"
@@ -427,7 +430,7 @@ class MainWindow(QMainWindow):
         self.tabs.currentChanged.connect(self._refresh_current_tab)
         layout.addWidget(self.tabs, 1)
 
-        self.home_ribbon = RibbonBar("启动一键分选识别", "方法选择", "导出图表")
+        self.home_ribbon = RibbonBar("启动一键分选识别", "方法选择", "导出结果")
         self.sort_ribbon = RibbonBar("开始分析", "方法选择", "导出结果")
         self.recognition_ribbon = RibbonBar("开始识别", "模型选择", "导出结果")
         self.export_ribbon = RibbonBar("生成报告", "导出设置", "导出结果")
@@ -973,23 +976,8 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "导出 JSON", "radar_attribute_dashboard.json", "JSON Files (*.json)")
         if not path:
             return
-        payload = {
-            "status": output.status,
-            "run_dir": output.run_dir,
-            "input_file": output.input_file,
-            "block_duration": output.block_duration,
-            "display_interval": output.display_interval,
-            "change_method": output.change_method,
-            "radars": output.radars,
-            "manifest": output.manifest,
-            "summary": output.summary,
-            "display_frames": output.display_frames,
-            "segments": output.segments.to_dict("records") if output.segments is not None else [],
-            "report_path": output.report_path,
-            "error": output.error,
-        }
         with open(path, "w", encoding="utf-8") as file:
-            json.dump(payload, file, ensure_ascii=False, indent=2)
+            json.dump(self._radar_dashboard_payload(output), file, ensure_ascii=False, indent=2, default=str)
         self.log(f"导出工作模式/功能属性 JSON：{path}")
 
     def export_radar_dashboard_csv(self):
@@ -1075,7 +1063,7 @@ class MainWindow(QMainWindow):
         self.sort_ribbon.run_clicked.connect(self.start_sorting)
         self.recognition_ribbon.run_clicked.connect(self.start_recognition)
         self.export_ribbon.run_clicked.connect(self.start_radar_dashboard_analysis)
-        self.home_ribbon.export_clicked.connect(self.export_current_charts)
+        self.home_ribbon.export_clicked.connect(self.export_home_results)
         self.sort_ribbon.export_clicked.connect(self.export_sorting_file)
         self.recognition_ribbon.export_clicked.connect(self.export_recognition_file)
         self.export_ribbon.method_clicked.connect(self.export_radar_dashboard_json)
@@ -2368,6 +2356,202 @@ class MainWindow(QMainWindow):
         if path:
             export_full_csv(self.data, path)
             self.log(f"导出完整结果：{path}")
+
+    def export_home_results(self):
+        if not self._ensure_data():
+            return
+        directory = QFileDialog.getExistingDirectory(self, "选择结果导出目录")
+        if not directory:
+            return
+
+        snapshot = self._home_export_snapshot()
+        if not any(snapshot[key] for key in ("sorting", "recognition", "radar")):
+            QMessageBox.information(self, "提示", "当前还没有可导出的分选、识别或工作模式/功能属性分析结果。")
+            return
+
+        self.log(f"主页导出结果开始：{directory}")
+        self._run_background(
+            self._export_home_results_task,
+            directory,
+            snapshot,
+            done=self._on_home_export_done,
+            stages=("准备导出结果", "导出结果中", "导出完成"),
+            pass_progress=True,
+            animate_progress=False,
+        )
+
+    def _home_export_snapshot(self) -> dict:
+        snapshot = {"sorting": None, "recognition": None, "radar": None}
+
+        if self.sorting_output is not None or self.sorting_pipeline_output is not None or self.pipeline_output is not None:
+            sorting_data = self._final_sorting_dataframe().copy()
+            stages = []
+            if self.sorting_pipeline_output is not None:
+                source_stages = self.sorting_pipeline_output.stage_results
+            elif self.pipeline_output is not None:
+                source_stages = self.pipeline_output.stage_results
+            else:
+                source_stages = []
+            for stage in source_stages or []:
+                stages.append((str(stage.definition.name), stage.sorting.data.copy()))
+            snapshot["sorting"] = {
+                "data": sorting_data,
+                "stages": stages,
+                "run_dir": self._sorting_run_directory(sorting_data),
+            }
+
+        if self.recognition_output is not None:
+            recognition_data = self.recognition_output.data.copy()
+            snapshot["recognition"] = {
+                "data": recognition_data,
+                "track_results": self.recognition_output.track_results.copy(),
+                "summary": {
+                    "model": self.recognition_output.model,
+                    "elapsed": self.recognition_output.elapsed,
+                    "mean_confidence": self.recognition_output.mean_confidence,
+                    "class_count": self.recognition_output.class_count,
+                    "summary": self.recognition_output.summary,
+                },
+                "run_dir": self._constant_path_from_dataframe(recognition_data, "Recognition_Run_Dir"),
+            }
+
+        if self.radar_dashboard_output is not None:
+            output = self.radar_dashboard_output
+            snapshot["radar"] = {
+                "payload": self._radar_dashboard_payload(output),
+                "segments": output.segments.copy() if output.segments is not None else pd.DataFrame(),
+                "run_dir": output.run_dir,
+            }
+
+        return snapshot
+
+    def _export_home_results_task(self, directory: str, snapshot: dict, progress_callback=None, should_cancel=None):
+        exported = []
+        skipped = []
+
+        def emit(value: int, text: str):
+            if progress_callback is not None:
+                progress_callback(value, text)
+
+        def check_cancelled():
+            if should_cancel is not None and should_cancel():
+                raise RuntimeError("导出已取消")
+
+        emit(8, "准备导出目录")
+        os.makedirs(directory, exist_ok=True)
+        check_cancelled()
+
+        sorting = snapshot.get("sorting")
+        if sorting is not None:
+            emit(20, "导出分选结果")
+            sorting_dir = os.path.join(directory, "sorting")
+            os.makedirs(sorting_dir, exist_ok=True)
+            sorting_data = sorting["data"]
+            final_path = os.path.join(sorting_dir, "sorting_final_result.csv")
+            export_sorting_csv(sorting_data, final_path)
+            export_full_csv(sorting_data, os.path.join(sorting_dir, "sorting_full_result.csv"))
+            stem, ext = os.path.splitext(os.path.basename(final_path))
+            for index, (name, stage_data) in enumerate(sorting["stages"], start=1):
+                safe_name = str(name).replace("+", "_").replace(" ", "_")
+                stage_path = os.path.join(sorting_dir, f"{stem}_stage{index}_{safe_name}{ext or '.csv'}")
+                export_sorting_csv(stage_data, stage_path)
+            check_cancelled()
+            run_dir = sorting.get("run_dir")
+            if run_dir:
+                emit(35, "复制分选运行目录")
+                self._copy_result_directory(run_dir, os.path.join(sorting_dir, "run_output"))
+            exported.append("分选")
+        else:
+            skipped.append("分选")
+
+        check_cancelled()
+        recognition = snapshot.get("recognition")
+        if recognition is not None:
+            emit(50, "导出识别结果")
+            recognition_dir = os.path.join(directory, "recognition")
+            os.makedirs(recognition_dir, exist_ok=True)
+            export_recognition_csv(recognition["track_results"], os.path.join(recognition_dir, "recognition_track_result.csv"))
+            export_full_csv(recognition["data"], os.path.join(recognition_dir, "recognition_pulse_result.csv"))
+            with open(os.path.join(recognition_dir, "recognition_summary.json"), "w", encoding="utf-8") as file:
+                json.dump(recognition["summary"], file, ensure_ascii=False, indent=2, default=str)
+            check_cancelled()
+            run_dir = recognition.get("run_dir")
+            if run_dir:
+                emit(62, "复制识别运行目录")
+                self._copy_result_directory(run_dir, os.path.join(recognition_dir, "run_output"))
+            exported.append("识别")
+        else:
+            skipped.append("识别")
+
+        check_cancelled()
+        radar = snapshot.get("radar")
+        if radar is not None:
+            emit(76, "导出工作模式/功能属性分析结果")
+            radar_dir = os.path.join(directory, "radar_attribute")
+            os.makedirs(radar_dir, exist_ok=True)
+            with open(os.path.join(radar_dir, "radar_attribute_dashboard.json"), "w", encoding="utf-8") as file:
+                json.dump(radar["payload"], file, ensure_ascii=False, indent=2, default=str)
+            segments = radar["segments"]
+            segments.to_csv(os.path.join(radar_dir, "radar_attribute_segments.csv"), index=False, encoding="utf-8-sig")
+            check_cancelled()
+            if radar.get("run_dir"):
+                emit(88, "复制工作模式/功能属性分析运行目录")
+                self._copy_result_directory(radar["run_dir"], os.path.join(radar_dir, "run_output"))
+            exported.append("工作模式/功能属性分析")
+        else:
+            skipped.append("工作模式/功能属性分析")
+
+        emit(100, "导出完成")
+        skipped_text = f"；未生成：{'、'.join(skipped)}" if skipped else ""
+        return {"directory": directory, "exported": exported, "skipped_text": skipped_text}
+
+    def _on_home_export_done(self, result: dict, elapsed: float):
+        directory = result.get("directory", "")
+        exported = result.get("exported", [])
+        skipped_text = result.get("skipped_text", "")
+        self._finish_status("导出结果", elapsed)
+        self.log(f"主页导出结果完成：{directory}（{', '.join(exported)}）{skipped_text}，耗时 {format_elapsed(elapsed)}")
+        QMessageBox.information(self, "导出完成", f"结果已导出到：\n{directory}{skipped_text}")
+
+    def _radar_dashboard_payload(self, output: RadarAttributeDashboard) -> dict:
+        return {
+            "status": output.status,
+            "run_dir": output.run_dir,
+            "input_file": output.input_file,
+            "block_duration": output.block_duration,
+            "display_interval": output.display_interval,
+            "change_method": output.change_method,
+            "radars": output.radars,
+            "manifest": output.manifest,
+            "summary": output.summary,
+            "display_frames": output.display_frames,
+            "segments": output.segments.to_dict("records") if output.segments is not None else [],
+            "report_path": output.report_path,
+            "error": output.error,
+        }
+
+    def _constant_path_from_dataframe(self, df: Optional[pd.DataFrame], column: str) -> Optional[str]:
+        if df is None or column not in df.columns:
+            return None
+        values = [str(value) for value in df[column].dropna().unique() if str(value).strip()]
+        return values[0] if values else None
+
+    def _copy_result_directory(self, source: str, destination: str):
+        if not source or not os.path.isdir(source):
+            return
+        source_abs = os.path.abspath(source)
+        destination_abs = os.path.abspath(destination)
+        source_norm = os.path.normcase(source_abs)
+        destination_norm = os.path.normcase(destination_abs)
+        if source_norm == destination_norm:
+            return
+        try:
+            common = os.path.commonpath([source_norm, destination_norm])
+        except ValueError:
+            common = ""
+        if common == source_norm:
+            return
+        shutil.copytree(source_abs, destination_abs, dirs_exist_ok=True)
 
     def export_current_charts(self):
         page = self.tabs.currentWidget()
