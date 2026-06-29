@@ -24,6 +24,7 @@ def detect_change_points(
     method: str = "auto",
     min_gap: int = 4,
     n_sync_features: int = 2,
+    z_threshold: float = 2.5,
 ) -> list[ChangePoint]:
     """
     变化点检测主入口。
@@ -61,7 +62,8 @@ def detect_change_points(
         cps = _detect_ruptures(normalized, feature_names, min_gap=min_gap)
     else:
         cps = _detect_custom(normalized, feature_names, min_gap=min_gap,
-                             n_sync_features=n_sync_features)
+                             n_sync_features=n_sync_features,
+                             z_threshold=z_threshold)
 
     # 补充原始窗口 ID
     for cp in cps:

@@ -16,6 +16,13 @@ from typing import Callable, Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from .config_manager import (
+    append_cli_args,
+    apply_mapping_to_object,
+    nested_config,
+    snapshot_config,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RUN_ROOT = PROJECT_ROOT / ".model_runs"
@@ -27,6 +34,99 @@ CYCLE_PERIOD_BEAT_MODEL_FILE = PROJECT_ROOT / "分选模型" / "WU" / "main5_200
 TRACKLET_MHT_MODEL_FILE = PROJECT_ROOT / "分选模型" / "WU" / "tracklet_mht_reduce_batches.py"
 RECOGNITION_MODEL_DIR = PROJECT_ROOT / "识别模型" / "zeng"
 ZENG_TEMPLATE_LIBRARY = RECOGNITION_MODEL_DIR / "outputs_expanded_template_library" / "template_library.json"
+
+STREAMING_SORT_CLI_PARAMS = {
+    "max_track_gap_beats",
+    "link_threshold",
+    "archive_link_threshold",
+    "fragment_link_threshold",
+    "fragment_pair_threshold",
+    "prototype_add_threshold",
+    "prototype_update_alpha",
+    "update_alpha",
+    "archive_max_gap_beats",
+    "archive_min_seen_beats",
+    "archive_top_k",
+    "archive_time_decay",
+    "archive_gate_param5_deg",
+    "archive_gate_param4",
+    "archive_gate_pri_us",
+    "max_prototypes_per_track",
+    "min_sort_pulses",
+    "min_batch_pulses",
+    "scale_param1",
+    "scale_param2",
+    "scale_param4",
+    "scale_param5_deg",
+    "scale_pri_us",
+    "weight_param1",
+    "weight_param2",
+    "weight_param4",
+    "weight_param5",
+    "weight_pri",
+    "weight_time_gap",
+}
+
+ZENG_CLI_PARAMS = {
+    "min_batch_pulses",
+    "pri_gap_multiplier",
+    "pri_gap_quantile",
+    "threshold_scale",
+    "label_threshold_scales",
+    "class_threshold_floor_scale",
+    "min_margin",
+    "matching_mode",
+    "class_ratio_margin",
+    "label2_rescue_ratio",
+    "label2_feature_padding",
+    "secondary_reject_ratio_caps",
+    "topk_rescue_label",
+    "topk_size",
+    "topk_min_votes",
+    "topk_max_ratio",
+    "topk_feature_padding",
+    "class_ratio_rescue_label",
+    "class_ratio_rescue_max_ratio",
+    "class_ratio_rescue_max_delta",
+    "class_ratio_rescue_feature_padding",
+    "tuning_file",
+}
+
+ZENG_BOOL_CLI_PARAMS = {
+    "enable_label2_rescue",
+    "enable_topk_label_rescue",
+    "enable_class_ratio_label_rescue",
+}
+
+MAIN_SORT_PARAM_ALIASES = {
+    "cycle_T_min": "frame_T_min",
+    "cycle_T_max": "frame_T_max",
+    "cycle_bin": "frame_candidate_bin",
+    "top_k_cycle_candidates": "top_k_frame_candidates",
+    "min_pulses_for_cycle": "min_pulses_for_tframe",
+    "chain_toa_tol": "frame_toa_tol",
+}
+
+
+def _apply_main_sort_config(cfg) -> list[str]:
+    params = nested_config("main_sort", "main5_params")
+    applied = apply_mapping_to_object(cfg, params)
+    for key, alias in MAIN_SORT_PARAM_ALIASES.items():
+        if key in params and hasattr(cfg, alias):
+            setattr(cfg, alias, params[key])
+            applied.append(alias)
+    return applied
+
+
+def _apply_mht_config(args) -> list[str]:
+    applied = []
+    for section in ("metrics", "mht_params", "core_mht_params", "fixed_params"):
+        applied.extend(apply_mapping_to_object(args, nested_config("fine_sort", section)))
+    return applied
+
+
+def _apply_zeng_config(args) -> list[str]:
+    return apply_mapping_to_object(args, nested_config("recognition", "template_match_params"))
 
 
 def _run_dir(prefix: str) -> Path:
@@ -365,7 +465,12 @@ def run_hdbscan_sorting(
         write_annotated_outputs=False,
         show_progress=False,
     )
+    snapshot_config("pre_sort", run_dir, "pre_sort_config_snapshot.json")
+    snapshot_config("main_sort", run_dir, "main_sort_config_snapshot.json")
+    snapshot_config("fine_sort", run_dir, "fine_sort_config_snapshot.json")
+    _apply_main_sort_config(cycle_cfg)
     cycle_mcfg = cycle_module.build_candidate_cfg(cycle_cfg)
+    _apply_main_sort_config(cycle_mcfg)
     cycle_output_dir.mkdir(parents=True, exist_ok=True)
     zeng_rec_module = None
     zeng_args = None
@@ -376,8 +481,10 @@ def run_hdbscan_sorting(
     zeng_min_margin = 0.0
     zeng_class_floor_scale = 0.4
     if stream_callback is not None and streaming_zeng and zeng_template_library_exists():
+        snapshot_config("recognition", run_dir, "recognition_config_snapshot.json")
         zeng_rec_module = _load_zeng_recognition_module()
         zeng_args = _zeng_200ms_args()
+        _apply_zeng_config(zeng_args)
         zeng_templates, zeng_metadata = zeng_rec_module.load_template_library(ZENG_TEMPLATE_LIBRARY)
         (
             zeng_threshold_scale,
@@ -528,6 +635,7 @@ def run_hdbscan_sorting(
         "--n_jobs",
         "1",
     ]
+    append_cli_args(command, nested_config("pre_sort", "streaming_sort_params"), STREAMING_SORT_CLI_PARAMS)
     _run_python_script(
         command,
         SORT_MODEL_DIR,
@@ -625,6 +733,7 @@ def _new_tracklet_mht_state(module, input_dir: Path, output_dir: Path, id_column
     args.output_dir = Path(output_dir)
     args.id_column = str(id_column)
     args.skip_metrics = True
+    _apply_mht_config(args)
     output_dir.mkdir(parents=True, exist_ok=True)
     return {
         "module": module,
@@ -1052,6 +1161,8 @@ def run_cycle_period_sorting(
     )
     run_dir = _run_dir("cycle_period_sort")
     print(f"[cycle_period] run_dir={run_dir}", flush=True)
+    snapshot_config("main_sort", run_dir, "main_sort_config_snapshot.json")
+    snapshot_config("fine_sort", run_dir, "fine_sort_config_snapshot.json")
     _emit(progress_callback, 5, "cycle_period加载200ms主分选脚本")
     module = _load_cycle_period_beat_module()
     beat_input_dir, beat_files = _beat_files_for_cycle_period(df, run_dir)
@@ -1093,11 +1204,13 @@ def run_cycle_period_sorting(
         write_annotated_outputs=False,
         show_progress=False,
     )
+    _apply_main_sort_config(cfg)
 
     _check_cancelled(should_cancel)
     _emit(progress_callback, 1, "cycle_period 200ms主分选开始")
     output_dir.mkdir(parents=True, exist_ok=True)
     mcfg = module.build_candidate_cfg(cfg)
+    _apply_main_sort_config(mcfg)
     summary_rows = []
     total_beats = max(len(beat_files), 1)
     mht_module = _load_tracklet_mht_module()
@@ -1222,6 +1335,7 @@ def run_zeng_recognition(
 
     run_dir = _run_dir("zeng_200ms_recognition")
     print(f"[zeng] run_dir={run_dir}", flush=True)
+    snapshot_config("recognition", run_dir, "recognition_config_snapshot.json")
     _emit(progress_callback, 5, f"信号识别运行目录：{run_dir}")
     pdw_file = run_dir / "input_pdw.txt"
     sort_file = run_dir / "input_sort.txt"
@@ -1249,6 +1363,11 @@ def run_zeng_recognition(
         "--window_seconds",
         "0.2",
     ]
+    recognition_params = nested_config("recognition", "template_match_params")
+    append_cli_args(command, recognition_params, ZENG_CLI_PARAMS)
+    for key in sorted(ZENG_BOOL_CLI_PARAMS):
+        if key in recognition_params and bool(recognition_params[key]):
+            command.append(f"--{key}")
     _run_python_script(command, RECOGNITION_MODEL_DIR, run_dir / "run.log", progress_callback, should_cancel)
 
     final_file = output_dir / "sample1_200ms_template_match_all_pdw_with_label.txt"

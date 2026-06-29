@@ -1,0 +1,36 @@
+{
+  "description": "Cycle-period main sorting config for Sample_1 200 ms stream.",
+  "input_dir": "outputs_streaming_200ms_sample1",
+  "output_dir": "outputs_streaming_200ms_sample1_main5_stream",
+  "truth_file": "Sorted1_PDW.txt",
+  "id_column": "SigIdx",
+  "output_id_column": "OurPredID",
+  "metrics": {
+    "beat_seconds": 0.2,
+    "sort_purity_threshold": 0.9,
+    "sort_min_target_fraction": 0.1,
+    "sort_mix_fail_min_pulses": 1
+  },
+  "main5_params": {
+    "cycle_T_min": 1e-6,
+    "cycle_T_max": 5e-3,
+    "min_pulses_for_cycle": 10,
+    "chain_toa_tol": 3e-6,
+    "merge_T_rel_tol": 0.005,
+    "param_absorb_min_score": 5.1
+  },
+  "recommended_ranges": {
+    "cycle_T_min": "1e-6 ~ 5e-6",
+    "cycle_T_max": "1e-3 ~ 5e-3",
+    "min_pulses_for_cycle": "8 ~ 20",
+    "chain_toa_tol": "1e-6 ~ 3e-6",
+    "merge_T_rel_tol": "0.003 ~ 0.015",
+    "param_absorb_min_score": "4.8 ~ 5.6"
+  },
+  "last_known_result": {
+    "sort_acc": 0.911842,
+    "add_rate": 2.36184211,
+    "old_batches": 383,
+    "new_batches": 322
+  }
+}

@@ -390,8 +390,9 @@ class FunctionAttributeEngine:
             return "unknown", "数据不足", f"脉冲数不足({total_pulses}<500)"
 
         # 得分过低
-        if best_score < 0.35:
-            return "unknown", "未知", f"融合得分过低({best_score:.3f}<0.35)"
+        min_score = float(self.thresholds.get("min_score", 0.35))
+        if best_score < min_score:
+            return "unknown", "未知", f"融合得分过低({best_score:.3f}<{min_score:.3f})"
 
         # 平局检查 (修复: 全局平局输出待定)
         if len(ranked) >= 2:

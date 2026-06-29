@@ -3,6 +3,7 @@ import os
 import shutil
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Dict, Optional
 
 import pandas as pd
@@ -53,6 +54,7 @@ from utils.helpers import format_elapsed
 from .charts import (
     TableCard,
 )
+from .config_page import ConfigPage
 from .pg_charts import (
     PgChartCard,
     plot_class_stats,
@@ -287,7 +289,7 @@ class AnalysisPage(QWidget):
     def _stage_display_name(self, name: str) -> str:
         return {
             "HDBSCAN": "预分选",
-            "HDBSCAN+cycle_period": "主分选",
+            "cycle_period": "主分选",
             "MHT": "细分选",
         }.get(name, name)
 
@@ -501,11 +503,14 @@ class MainWindow(QMainWindow):
         self.export_ribbon.export_btn.setText("打开输出目录")
         self.export_ribbon.export_btn.set_icon_kind("export")
         self.export_page = self._export_page()
+        self.config_page = ConfigPage(Path(__file__).resolve().parents[1])
 
         self.tabs.addTab(self.home_page, "主页")
         self.tabs.addTab(self.sort_page, "信号分选")
         self.tabs.addTab(self.recognition_page, "信号识别")
         self.tabs.addTab(self.export_page, "功能属性与工作模式识别")
+
+        self.tabs.addTab(self.config_page, "参数设置")
 
         layout.addWidget(self._bottom_panel())
         self._status_bar()
@@ -1070,6 +1075,7 @@ class MainWindow(QMainWindow):
         self.export_ribbon.compare_clicked.connect(self.export_radar_dashboard_csv)
         self.export_ribbon.template_clicked.connect(self.export_report_file)
         self.export_ribbon.export_clicked.connect(self.open_radar_dashboard_dir)
+        self.config_page.log_message.connect(self.log)
         for panel in self._method_panels():
             panel.pipeline_changed.connect(self._sync_pipeline_selection)
             panel.sorting_method_changed.connect(lambda m: self.log(f"分选方法切换为：{m}"))

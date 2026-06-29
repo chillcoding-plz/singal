@@ -1,0 +1,20 @@
+{
+  "template_match_params": {
+    "min_batch_pulses": 20,
+    "pri_gap_multiplier": 5.0,
+    "pri_gap_quantile": 0.9,
+    "threshold_scale": 0.5,
+    "label_threshold_scales": "1:0.5,2:0.5,3:0.5,4:0.5",
+    "class_threshold_floor_scale": 0.4,
+    "matching_mode": "nearest"
+  },
+  "recommend_match_params": {
+    "min_batch_pulses": "5 ~ 50",
+    "pri_gap_multiplier": "2.0 ~ 10.0",
+    "pri_gap_quantile": "0.70 ~ 0.98",
+    "threshold_scale": "0.20 ~ 1.20",
+    "label_threshold_scales": "0.2 ~ 1.2",
+    "class_threshold_floor_scale": "0.1 ~ 1.0",
+    "matching_mode": ["nearest", "nearest_with_rescue", "class_min_ratio"]
+  }
+}

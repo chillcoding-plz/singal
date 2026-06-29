@@ -53,6 +53,22 @@ from .output_writer import (
 CODE_VERSION = "v3.0"
 
 
+def _load_runtime_config(config_path: Optional[str]) -> dict:
+    config = {}
+    if config_path and os.path.exists(config_path):
+        with open(config_path, "r", encoding="utf-8-sig") as file:
+            data = json.load(file)
+        if isinstance(data, dict):
+            config = data
+    return {
+        "window_feature_min_pulses": int(config.get("数据过滤参数", {}).get("窗口特征最小脉冲数", 5)),
+        "change_min_gap": int(config.get("变化点检测参数", {}).get("变化点最小间隔窗口数", 4)),
+        "change_z_threshold": float(config.get("变化点检测参数", {}).get("变化强度阈值", 2.5)),
+        "mode_known_min": float(config.get("工作模式识别参数", {}).get("已知模式最低得分", 0.45)),
+        "attr_min_score": float(config.get("功能属性识别参数", {}).get("属性最低融合得分", 0.35)),
+    }
+
+
 def run_pipeline(
     input_files: list[str],
     config_path: Optional[str] = None,
@@ -81,6 +97,7 @@ def run_pipeline(
         {radar_key: summary_dict}
     """
     start_time = time.time()
+    runtime_config = _load_runtime_config(config_path)
 
     print("\n" + "=" * 60)
     print(f"  雷达信号识别管线 {CODE_VERSION}")
@@ -132,7 +149,10 @@ def run_pipeline(
         # Stage 3: 窗口级特征
         print(f"    [3/10] 计算窗口级特征...")
         window_features = compute_features_batch(windows)
-        valid_mask = build_valid_mask(window_features)
+        valid_mask = build_valid_mask(
+            window_features,
+            min_pulses=runtime_config["window_feature_min_pulses"],
+        )
         n_valid = int(valid_mask.sum())
         print(f"    有效窗口: {n_valid}")
 
@@ -144,7 +164,11 @@ def run_pipeline(
         # Stage 5: 变化点检测
         print(f"    [5/10] 变化点检测 (方法={change_method})...")
         change_points = detect_change_points(
-            window_features, valid_mask, method=change_method,
+            window_features,
+            valid_mask,
+            method=change_method,
+            min_gap=runtime_config["change_min_gap"],
+            z_threshold=runtime_config["change_z_threshold"],
         )
         # 辐射边界由 build_state_segments 内部处理 (带 min_silent_gap 过滤)
         # 不在此处添加，避免过度分段
@@ -165,7 +189,7 @@ def run_pipeline(
 
         # Stage 7: 段级模式识别
         print(f"    [7/10] 段级模式识别...")
-        mode_engine = ModeEvidenceEngine()
+        mode_engine = ModeEvidenceEngine(thresholds={"known_min": runtime_config["mode_known_min"]})
         mode_results = []
         for seg in segments:
             seg_features = [
@@ -189,7 +213,7 @@ def run_pipeline(
 
         # Stage 9: 功能属性
         print(f"    [9/10] 功能属性识别...")
-        attr_engine = FunctionAttributeEngine()
+        attr_engine = FunctionAttributeEngine(thresholds={"min_score": runtime_config["attr_min_score"]})
         attr_results = _compute_function_attributes(
             window_features, decoded_results, segments, window_ids, attr_engine,
         )

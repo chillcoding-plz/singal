@@ -54,7 +54,7 @@ class SortingPipelineResult:
 
 SORTING_STAGES: Dict[str, SortingStageDefinition] = {
     "hdbscan": SortingStageDefinition("hdbscan", "HDBSCAN", "HDBSCAN", "HDBSCAN"),
-    "hdbscan_cycle_period": SortingStageDefinition("hdbscan_cycle_period", "HDBSCAN+cycle_period", "HDBSCAN", "CyclePeriod"),
+    "hdbscan_cycle_period": SortingStageDefinition("cycle_period", "cycle_period", "HDBSCAN", "CyclePeriod"),
     "hdbscan_cycle_period_mht": SortingStageDefinition("hdbscan_cycle_period_mht", "HDBSCAN+cycle_period+MHT", "HDBSCAN", "MHT"),
     "cycle_period": SortingStageDefinition("cycle_period", "cycle_period", "cycle_period", "CyclePeriod"),
     "mht": SortingStageDefinition("mht", "MHT", "MHT", "MHT"),

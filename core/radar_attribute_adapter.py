@@ -12,6 +12,8 @@ from typing import Callable, Optional
 
 import pandas as pd
 
+from .config_manager import config_path, load_config
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RADAR_DELIVERY_ROOT = PROJECT_ROOT / "识别模型" / "radar_signal_pipeline_delivery"
@@ -213,6 +215,26 @@ def _default_llm_labels_path() -> Optional[str]:
     return str(path) if path.exists() else None
 
 
+def _radar_runtime_config(block_duration: float, display_interval: float, change_method: str) -> tuple[float, float, str]:
+    config = load_config("radar_attribute")
+    if not isinstance(config, dict):
+        return block_duration, display_interval, change_method
+
+    time_config = config.get("时间窗口参数", {})
+    if isinstance(time_config, dict):
+        block_duration = float(time_config.get("结果汇总时长秒", block_duration))
+        display_interval = float(time_config.get("显示保存间隔秒", display_interval))
+
+    change_config = config.get("变化点检测参数", {})
+    if isinstance(change_config, dict):
+        method = str(change_config.get("变化点检测方法", change_method)).strip().lower()
+        if method in {"自动", "auto"}:
+            change_method = "auto"
+        elif method in {"custom", "ruptures"}:
+            change_method = method
+    return block_duration, display_interval, change_method
+
+
 def run_radar_attribute_pipeline(
     df: pd.DataFrame,
     output_base_dir: str | os.PathLike[str],
@@ -225,6 +247,7 @@ def run_radar_attribute_pipeline(
 ) -> RadarAttributeDashboard:
     if not RADAR_DELIVERY_ROOT.exists():
         raise FileNotFoundError(f"Radar attribute delivery root not found: {RADAR_DELIVERY_ROOT}")
+    block_duration, display_interval, change_method = _radar_runtime_config(block_duration, display_interval, change_method)
     if should_cancel and should_cancel():
         raise RuntimeError("Radar attribute pipeline cancelled")
     if progress_callback:
@@ -267,6 +290,7 @@ def run_radar_attribute_pipeline(
         api = RadarAPI(output_dir=str(runs_dir))
         result = api.run(
             input_files=[input_file],
+            config_path=str(config_path("radar_attribute")),
             block_duration=block_duration,
             change_method=change_method,
             display_interval=display_interval,

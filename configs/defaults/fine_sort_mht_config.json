@@ -1,0 +1,47 @@
+{
+  "description": "Tracklet-level MHT batch reduction config for Sample_1 main5 stream.",
+  "input_dir": "outputs_entropy_crossbeat_only_main5_stream",
+  "output_dir": "outputs_tracklet_mht_reduced_sample1_only_main5_stream",
+  "truth_file": "edata/Test_Data/Sample_1/Sorted_PDW.txt",
+  "id_column": "OurPredID",
+  "output_id_column": "MHTId",
+  "metrics": {
+    "beat_seconds": 0.2,
+    "sort_purity_threshold": 0.9,
+    "sort_min_target_fraction": 0.1,
+    "sort_mix_fail_min_pulses": 1
+  },
+  "core_mht_params": {
+    "feature_gate": 1.5,
+    "prefilter_p1": 80.0,
+    "prefilter_p2": 0.25,
+    "prefilter_p4": 8.0,
+    "prefilter_p5_deg": 3.0,
+    "rhythm_gate_us": 3.0,
+    "rhythm_gate_sigma": 1.2,
+    "max_beat_gap": 4
+  },
+  "fixed_params": {
+    "max_pri_steps": 40,
+    "weight_rhythm": 1.8,
+    "min_tracklet_pulses": 3,
+    "group_mode": "global",
+    "update_alpha": 0.25
+  },
+  "recommended_ranges": {
+    "feature_gate": "1.2 ~ 2.2",
+    "prefilter_p1": "60 ~ 140",
+    "prefilter_p2": "0.20 ~ 0.45",
+    "prefilter_p4": "6 ~ 15",
+    "prefilter_p5_deg": "2 ~ 5",
+    "rhythm_gate_us": "2.5 ~ 5",
+    "rhythm_gate_sigma": "1.0 ~ 2.0",
+    "max_beat_gap": "2 ~ 6"
+  },
+  "last_known_result": {
+    "OurPredID_sort_acc": 0.914,
+    "MHTId_sort_acc": 0.9088,
+    "old_batches": 222,
+    "new_batches": 220
+  }
+}
