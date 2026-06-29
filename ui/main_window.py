@@ -1670,18 +1670,18 @@ class MainWindow(QMainWindow):
         if not train_dir:
             return
         self.tabs.setCurrentWidget(self.recognition_page)
-        self.log(f"zeng 模板库生成开始：训练数据目录 {train_dir}")
+        self.log(f"信号识别模板库生成开始：训练数据目录 {train_dir}")
         self._run_background(
             run_zeng_template_training,
             train_dir,
             done=self._on_zeng_template_training_done,
-            stages=("检查训练数据", "生成 zeng 模板库", "更新模板库文件"),
+            stages=("检查训练数据", "生成信号识别模板库", "更新模板库文件"),
             pass_progress=True,
             animate_progress=False,
         )
 
     def _on_zeng_template_training_done(self, result: Dict[str, object], elapsed: float):
-        self._finish_status("zeng 模板库生成", elapsed)
+        self._finish_status("信号识别模板库生成", elapsed)
         self.log(
             "模板库生成完成："
             f"类别文件 {result.get('class_count')} 个，"

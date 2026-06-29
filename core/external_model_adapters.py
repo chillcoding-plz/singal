@@ -1418,7 +1418,7 @@ def run_zeng_template_training(
     if not RECOGNITION_MODEL_DIR.exists():
         raise FileNotFoundError(f"识别模型目录不存在：{RECOGNITION_MODEL_DIR}")
     _require_modules(
-        "zeng 模板库生成",
+        "信号识别模板库生成",
         {"numpy": "numpy", "pandas": "pandas"},
         f"python -m pip install -r {RECOGNITION_MODEL_DIR / 'requirements.txt'}",
     )
